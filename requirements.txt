@@ -1,0 +1,5 @@
+fastapi
+uvicorn
+shazamio
+pylast
+aiohttp

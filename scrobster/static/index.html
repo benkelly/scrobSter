@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>scrobSter</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #111418;
+         color: #e6e6e6; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.3rem; letter-spacing: .05em; }
+  button { background: #1f6feb; color: #fff; border: 0; border-radius: 6px;
+           padding: .5rem 1rem; font: inherit; cursor: pointer; }
+  button.off { background: #444c56; }
+  #micnote { margin-top: .5rem; font-size: .8rem; min-height: 1rem; }
+  #now { margin: 1rem 0; padding: 1rem; background: #161b22; border-radius: 8px;
+         display: flex; gap: 1rem; align-items: center; min-height: 64px; }
+  #now img { width: 64px; height: 64px; border-radius: 6px; }
+  table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  td, th { padding: .4rem .5rem; border-bottom: 1px solid #21262d; text-align: left;
+           vertical-align: top; }
+  .ok { color: #3ddc84; } .err { color: #f85149; } .muted { color: #8b949e; }
+  img.thumb { width: 32px; height: 32px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<h1>scrobSter <span id="dot">&#9679;</span></h1>
+<div>
+  <button id="toggle">&hellip;</button>
+  <button id="mic" class="off">use this device&rsquo;s mic</button>
+  <span id="services" class="muted"></span>
+</div>
+<div id="micnote" class="muted"></div>
+<div id="now" class="muted">waiting&hellip;</div>
+<table id="history">
+  <thead><tr><th></th><th>track</th><th>time</th><th>scrobbled</th></tr></thead>
+  <tbody></tbody>
+</table>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const authHeaders = () => localStorage.token ? {authorization: "Bearer " + localStorage.token} : {};
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, {...opts, headers: {...authHeaders(), ...(opts.headers || {})}});
+  if (r.status === 401) {
+    const t = prompt("API token:");
+    if (t) { localStorage.token = t; return api(path, opts); }
+  }
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+
+let listening = false;
+const fmtTs = ts => new Date(ts * 1000).toLocaleString();
+
+async function refresh() {
+  try {
+    const st = await api("/api/status");
+    listening = st.listening;
+    $("#dot").style.color = listening ? "#3ddc84" : "#8b949e";
+    $("#toggle").textContent = listening ? "stop listening" : "start listening";
+    $("#toggle").className = listening ? "" : "off";
+    const lvl = st.level_db == null ? ""
+      : `  |  input ${st.level_db} dBFS${st.level_db < -80 ? "  \u26a0 SILENT \u2014 wrong AUDIO_DEVICE?" : ""}`;
+    $("#services").textContent =
+      (st.services.length ? "\u2192 " + st.services.join(", ") : "no services configured") + lvl;
+    const m = st.last_match;
+    const tries = st.attempts
+      ? `${st.attempts} listen${st.attempts === 1 ? "" : "s"}, last ${fmtTs(st.last_attempt).split(", ")[1] || ""}`
+      : "starting\u2026";
+    $("#now").innerHTML = m
+      ? `${m.art_url ? `<img src="${esc(m.art_url)}" alt="">` : ""}<div><b>${esc(m.title)}</b><br>${esc(m.artist)}<br><span class="muted">${fmtTs(m.ts)}${m.source ? " \u00b7 via " + esc(m.source) : ""} \u00b7 ${esc(tries)}</span></div>`
+      : `<div><span class="muted">${esc(st.last_error || "no match yet \u2014 " + tries)}</span></div>`;
+    const rows = await api("/api/recent?limit=50");
+    $("#history tbody").innerHTML = rows.map(r => `<tr>
+      <td>${r.art_url ? `<img class="thumb" src="${esc(r.art_url)}" alt="">` : ""}</td>
+      <td><b>${esc(r.title)}</b><br>${esc(r.artist)}${r.album ? `<br><span class="muted">${esc(r.album)}</span>` : ""}</td>
+      <td class="muted">${fmtTs(r.ts)}</td>
+      <td>${Object.entries(r.services).map(([s, v]) =>
+          `<span class="${v === "ok" ? "ok" : "err"}" title="${esc(v)}">${esc(s)}</span>`).join(" ")}</td>
+    </tr>`).join("");
+  } catch (e) {
+    $("#now").textContent = "error: " + e.message;
+  }
+}
+
+$("#toggle").onclick = async () => {
+  await api("/api/listen", {method: "POST",
+    headers: {"content-type": "application/json"},
+    body: JSON.stringify({on: !listening})});
+  refresh();
+};
+
+// --- browser mic: record a clip, post it, repeat. Server does the matching. ---
+const CLIP_MS = 12000, GAP_MS = 3000;
+let micOn = false, micStream = null;
+const micNote = t => { $("#micnote").textContent = t; };
+
+function recordClip(stream, ms) {
+  return new Promise((resolve, reject) => {
+    let rec;
+    const chunks = [];
+    try { rec = new MediaRecorder(stream); } catch (e) { return reject(e); }
+    rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+    rec.onerror = e => reject(e.error || new Error("recorder failed"));
+    rec.onstop = () => resolve(new Blob(chunks, {type: rec.mimeType}));
+    rec.start();
+    setTimeout(() => { if (rec.state !== "inactive") rec.stop(); }, ms);
+  });
+}
+
+async function micLoop() {
+  try {
+    // Voice processing strips the detail Shazam fingerprints. Ask for raw audio.
+    micStream = await navigator.mediaDevices.getUserMedia({audio: {
+      echoCancellation: false, noiseSuppression: false, autoGainControl: false}});
+  } catch (e) {
+    micOn = false;
+    paintMic();
+    micNote("microphone blocked: " + e.message);
+    return;
+  }
+  while (micOn) {
+    try {
+      const clip = await recordClip(micStream, CLIP_MS);
+      const r = await fetch("/api/match", {
+        method: "POST",
+        headers: {...authHeaders(), "content-type": "application/octet-stream"},
+        body: clip});
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const j = await r.json();
+      micNote(j.match
+        ? `matched ${j.match.artist} \u2014 ${j.match.title}`
+        : `no match (input ${j.level_db} dBFS)`);
+      refresh();
+    } catch (e) {
+      micNote("error: " + e.message);
+    }
+    if (micOn) await new Promise(r => setTimeout(r, GAP_MS));
+  }
+  micStream.getTracks().forEach(t => t.stop());
+  micStream = null;
+}
+
+function paintMic() {
+  $("#mic").textContent = micOn ? "stop this device\u2019s mic" : "use this device\u2019s mic";
+  $("#mic").className = micOn ? "" : "off";
+}
+
+$("#mic").onclick = () => {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    micNote("this browser blocks mic capture without HTTPS (localhost is allowed)");
+    return;
+  }
+  micOn = !micOn;
+  paintMic();
+  if (micOn) { micNote("listening from this device\u2026"); micLoop(); }
+  else micNote("");
+};
+
+paintMic();
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

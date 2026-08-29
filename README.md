@@ -1,1 +1,227 @@
 # scrobSter
+
+Self-hosted background-audio scrobbler. It listens to an audio input (mic or line-in), identifies songs with Shazam, and scrobbles them to Last.fm, Libre.fm, ListenBrainz, and Maloja. Point it at a radio, a TV, or the room.
+
+## How it works
+
+Every 12 seconds, ffmpeg records a 10-second chunk from your audio device. [shazamio](https://github.com/shazamio/shazamio) builds an audio signature locally and asks the Shazam API for a match. A new track scrobbles to every configured service. The same track does not scrobble again for 30 minutes. A web page shows the current match and the history. The JSON API serves mobile clients and Home Assistant.
+
+## Requirements
+
+- Python 3.10 - 3.13
+- ffmpeg on PATH
+- An audio input device
+
+## Quick start
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+Put your settings in a `.env` file next to the code. Git ignores this file, and
+your secrets stay out of the shell history.
+
+```sh
+# .env
+AUDIO_DEVICE=:1
+LISTENBRAINZ_TOKEN=your-token
+```
+
+Then start it:
+
+```sh
+.venv/bin/python -m scrobster
+```
+
+A real environment variable always overrides the file, so Docker and systemd
+work as usual.
+
+Open http://localhost:8000. Toggle listening from the page.
+
+Test recognition with a file first:
+
+```sh
+.venv/bin/python -m scrobster.listener some-song.wav
+```
+
+## Configuration (environment variables)
+
+A service is enabled when all of its variables are set.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `AUDIO_BACKEND` | `avfoundation` (macOS) / `alsa` (Linux) | ffmpeg input format |
+| `AUDIO_DEVICE` | `:0` (macOS) / `default` (Linux) | ffmpeg input device |
+| `CHUNK_SECONDS` | `12` | recorded seconds per match attempt; values above 14 are capped |
+| `MATCH_INTERVAL` | `15` | minimum seconds per cycle; increase if rate-limited |
+| `RESCROBBLE_MINUTES` | `30` | cooldown before the same track scrobbles again |
+| `DB_PATH` | `scrobster.db` | SQLite history file |
+| `PORT` | `8000` | web/API port |
+| `API_TOKEN` | unset | if set, `/api/*` requires `Authorization: Bearer <token>` |
+| `LISTEN_ON_START` | `1` | start the capture loop at boot |
+| `LASTFM_API_KEY` `LASTFM_API_SECRET` | unset | Last.fm; create a key at https://www.last.fm/api/account/create |
+| `LASTFM_SESSION_KEY` | unset | preferred login. Run `python -m scrobster.auth` to get one |
+| `LASTFM_PASSWORD_HASH` or `LASTFM_PASSWORD` | unset | fallback login if you do not want the browser step |
+| `LIBREFM_USERNAME` + `LIBREFM_PASSWORD_HASH` or `LIBREFM_PASSWORD` | unset | Libre.fm |
+| `LISTENBRAINZ_TOKEN` | unset | token from https://listenbrainz.org/settings/ |
+| `LISTENBRAINZ_URL` | `https://api.listenbrainz.org` | alternative ListenBrainz server |
+| `MALOJA_URL` `MALOJA_KEY` | unset | Maloja base URL + API key |
+
+## Connect Last.fm
+
+Create an API account at https://www.last.fm/api/account/create. Put the key and
+the secret in `.env`, then authorize once:
+
+```sh
+.venv/bin/python -m scrobster.auth          # prints a URL, open it and allow access
+.venv/bin/python -m scrobster.auth <token>  # prints LASTFM_SESSION_KEY
+```
+
+Copy the session key into `.env`. scrobSter never stores your password. You can
+revoke the key in your Last.fm account settings.
+
+## Find your audio device
+
+Step 1. List the devices.
+
+macOS:
+
+```sh
+ffmpeg -f avfoundation -list_devices true -i ""
+# use the audio index, for example AUDIO_DEVICE=":1"
+```
+
+Linux:
+
+```sh
+arecord -l
+# use for example AUDIO_DEVICE="hw:1,0" or AUDIO_DEVICE="default"
+```
+
+Step 2. Confirm that the device hears sound. Do not skip this step. A silent
+device captures a file of the correct size, so size alone proves nothing.
+
+```sh
+ffmpeg -f avfoundation -i ":1" -t 5 -ac 1 -ar 44100 /tmp/t.wav -y
+ffmpeg -i /tmp/t.wav -af volumedetect -f null - 2>&1 | grep mean_volume
+```
+
+Play music, then read the result. A value near -91 dB is digital silence, and
+that device is the wrong one. A value near -20 dB is good.
+
+The web page shows the same level as `input <n> dBFS`. It warns you when the
+device is silent.
+
+Index 0 is not always the microphone. On a Mac with virtual audio software, index
+0 is often a loopback device that stays silent until you route audio through it.
+
+## Docker (Linux host)
+
+```sh
+docker build -t scrobster .
+docker run -d --name scrobster \
+  --device /dev/snd \
+  -p 8000:8000 \
+  -v scrobster-data:/data \
+  -e LISTENBRAINZ_TOKEN=your-token \
+  scrobster
+```
+
+Docker Desktop on macOS cannot reach the microphone. Run bare on macOS.
+
+## Two ways to listen
+
+**Server microphone (default).** The Python process records the host audio
+device with ffmpeg. It runs headless, needs no browser, and survives a closed
+tab. Use this for an always-on machine.
+
+**Browser microphone (optional).** Open the page and select *use this device's
+mic*. The browser records 12-second clips and posts them to `POST /api/match`.
+The server identifies and scrobbles them through the same path, so both inputs
+share one history and one duplicate filter. Use this for a phone or a laptop in
+another room.
+
+The browser asks for raw audio, because echo cancellation, noise suppression,
+and automatic gain control remove the detail that Shazam needs.
+
+The tab must stay open and awake. A phone stops recording when the screen
+sleeps.
+
+Browsers permit microphone access only in a secure context. `http://localhost`
+works. A plain `http://` address on your network does not. To use a phone, put
+the app behind HTTPS, for example with a reverse proxy or Tailscale.
+
+## API
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/status` | listening state, last match, input level (`level_db`), enabled services |
+| `POST /api/listen` `{"on": true}` | start or stop the server capture loop |
+| `POST /api/match` (raw audio body) | identify one clip and scrobble it; used by the browser mic |
+| `GET /api/recent?limit=50` | scrobble history |
+
+Home Assistant REST sensor:
+
+```yaml
+sensor:
+  - platform: rest
+    name: scrobSter
+    resource: http://your-host:8000/api/status
+    value_template: "{{ value_json.last_match.title if value_json.last_match else 'none' }}"
+    json_attributes: [listening, last_match]
+    scan_interval: 30
+```
+
+## Troubleshooting
+
+**Every cycle returns no match.** Read `input <n> dBFS` on the web page.
+
+- Near -91 dB: the device is silent. Pick a different `AUDIO_DEVICE`.
+- Near -20 dB but still no match: the microphone hears the music, but the sound
+  is too poor to identify. Raise the volume, or move the microphone closer.
+- On macOS, set Control Center > Mic Mode to **Standard**. Voice Isolation
+  removes everything except speech, and it destroys the fingerprint.
+
+**To scrobble music that plays on this computer**, capture the output instead of
+the microphone. Install a loopback device, for example
+[Background Music](https://github.com/kyleneideck/BackgroundMusic) or
+[BlackHole](https://github.com/ExistentialAudio/BlackHole). Set it as the system
+output, then set `AUDIO_DEVICE` to its index. The audio stays digital, so the
+match rate is much better than a microphone.
+
+**Other problems.**
+
+- `certificate verify failed` on macOS with a python.org build: run with `SSL_CERT_FILE=$(.venv/bin/python -m certifi)`.
+- ffmpeg capture fails on macOS: give your terminal microphone permission in System Settings > Privacy & Security.
+- HTTP 429 from Shazam: your IP is rate-limited. Increase `MATCH_INTERVAL`.
+
+## Recognition limits (measured)
+
+These numbers come from tests against known audio on this project. They explain
+the defaults.
+
+- **A longer window does not help. It breaks matching.** Windows of 8 to 14
+  seconds matched. Windows of 16 and 20 seconds failed every time, although
+  their fingerprints were larger. `CHUNK_SECONDS` is therefore capped at 14.
+- **Shazam tolerates a lot of noise.** A known track still matched under heavy
+  pink noise and strong artificial reverb, even when the noise was almost as
+  loud as the music.
+- **Level is what matters.** Matching failed only when the music sat about
+  14 dB below the noise, or lower.
+
+So a missed song usually means one of these:
+
+- The sound at that moment was speech, not music.
+- The music was very quiet or very distant.
+- The recording is not in the Shazam database, for example a live version.
+- Microphone processing changed the sound. See Troubleshooting.
+
+The listener skips the request when the input is silent, so silence costs no
+API quota.
+
+## Notes
+
+- The Shazam API is unofficial and can change or block at any time. Keep `MATCH_INTERVAL` at 12 seconds or higher.
+- Scrobbles fire at match time, not at track end. This is fine for radio.
+- Run the logic self-check with `.venv/bin/python test_dedup.py`.
