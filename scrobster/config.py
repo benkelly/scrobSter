@@ -1,7 +1,29 @@
 """Env-var config. A service with all of its variables set is enabled."""
+import json
 import os
 import pathlib
 import sys
+
+
+def _load_options_json(path="/data/options.json"):
+    """Read Home Assistant add-on options.
+
+    The Supervisor validates the options and writes them here. Keys match the
+    environment variable names, so no wrapper script is needed. A real
+    environment variable still wins.
+    """
+    try:
+        data = json.loads(pathlib.Path(path).read_text())
+    except (OSError, ValueError):
+        return
+    if not isinstance(data, dict):
+        return
+    for key, value in data.items():
+        if value is None or value == "":
+            continue
+        if isinstance(value, bool):
+            value = "true" if value else "false"
+        os.environ.setdefault(key.upper(), str(value))
 
 
 def _load_env_file(path=".env"):
@@ -22,6 +44,7 @@ def _load_env_file(path=".env"):
 
 
 _load_env_file()
+_load_options_json()
 
 
 def _drop_stale_cert_file():

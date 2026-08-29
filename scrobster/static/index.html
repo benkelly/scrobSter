@@ -57,7 +57,7 @@ const fmtTs = ts => new Date(ts * 1000).toLocaleString();
 
 async function refresh() {
   try {
-    const st = await api("/api/status");
+    const st = await api("api/status");
     listening = st.listening;
     $("#dot").style.color = listening ? "#3ddc84" : "#8b949e";
     $("#toggle").textContent = listening ? "stop listening" : "start listening";
@@ -73,7 +73,7 @@ async function refresh() {
     $("#now").innerHTML = m
       ? `${m.art_url ? `<img src="${esc(m.art_url)}" alt="">` : ""}<div><b>${esc(m.title)}</b><br>${esc(m.artist)}<br><span class="muted">${fmtTs(m.ts)}${m.source ? " \u00b7 via " + esc(m.source) : ""} \u00b7 ${esc(tries)}</span></div>`
       : `<div><span class="muted">${esc(st.last_error || "no match yet \u2014 " + tries)}</span></div>`;
-    const rows = await api("/api/recent?limit=50");
+    const rows = await api("api/recent?limit=50");
     $("#history tbody").innerHTML = rows.map(r => `<tr>
       <td>${r.art_url ? `<img class="thumb" src="${esc(r.art_url)}" alt="">` : ""}</td>
       <td><b>${esc(r.title)}</b><br>${esc(r.artist)}${r.album ? `<br><span class="muted">${esc(r.album)}</span>` : ""}</td>
@@ -87,7 +87,7 @@ async function refresh() {
 }
 
 $("#toggle").onclick = async () => {
-  await api("/api/listen", {method: "POST",
+  await api("api/listen", {method: "POST",
     headers: {"content-type": "application/json"},
     body: JSON.stringify({on: !listening})});
   refresh();
@@ -125,7 +125,7 @@ async function micLoop() {
   while (micOn) {
     try {
       const clip = await recordClip(micStream, CLIP_MS);
-      const r = await fetch("/api/match", {
+      const r = await fetch("api/match", {
         method: "POST",
         headers: {...authHeaders(), "content-type": "application/octet-stream"},
         body: clip});

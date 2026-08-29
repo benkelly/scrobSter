@@ -189,6 +189,17 @@ Browsers permit microphone access only in a secure context. `http://localhost`
 works. A plain `http://` address on your network does not. To use a phone, put
 the app behind HTTPS, for example with a reverse proxy or Tailscale.
 
+## Home Assistant
+
+scrobSter is available as a Home Assistant add-on from
+https://github.com/benkelly/ha-addons. The add-on runs this same image and takes
+the microphone from the Home Assistant audio system, so you choose the input in
+the add-on configuration.
+
+The app also reads `/data/options.json` directly, which is where the Supervisor
+writes add-on options. Each key matches an environment variable, in either case.
+No wrapper script is needed.
+
 ## API
 
 | Endpoint | Purpose |
@@ -261,4 +272,4 @@ API quota.
 
 - The Shazam API is unofficial and can change or block at any time. Keep `MATCH_INTERVAL` at 12 seconds or higher.
 - Scrobbles fire at match time, not at track end. This is fine for radio.
-- Run the logic self-check with `.venv/bin/python test_dedup.py`.
+- Run the logic self-check with `.venv/bin/python test_scrobster.py`.

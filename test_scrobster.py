@@ -1,8 +1,13 @@
-"""Self-check for the pure logic. Run: .venv/bin/python test_dedup.py"""
+"""Self-check for the pure logic. Run: .venv/bin/python test_scrobster.py"""
 import io
+import json
 import math
+import os
 import struct
+import tempfile
 import wave
+
+from scrobster.config import _load_options_json
 
 from scrobster.listener import (MAX_SEGMENT_SECONDS, NOW_PLAYING_REFRESH_SECONDS,
                                 parse_track, peak_dbfs, segment_seconds,
@@ -84,6 +89,25 @@ def main():
     assert segment_seconds(10) == 10, "short window passes through"
     assert segment_seconds(12) == 12
     assert segment_seconds(30) == MAX_SEGMENT_SECONDS, "oversized window is capped"
+
+    # Home Assistant options arrive as JSON and must become environment variables
+    for key in ("LISTENBRAINZ_TOKEN", "MATCH_INTERVAL", "LISTEN_ON_START", "BLANK"):
+        os.environ.pop(key, None)
+    os.environ["AUDIO_DEVICE"] = "real-env-wins"
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "options.json")
+        with open(path, "w") as fh:
+            json.dump({"listenbrainz_token": "abc", "match_interval": 20,
+                       "listen_on_start": False, "blank": "", "missing": None,
+                       "audio_device": "from-options"}, fh)
+        _load_options_json(path)
+    assert os.environ["LISTENBRAINZ_TOKEN"] == "abc", "lower case key becomes upper case"
+    assert os.environ["MATCH_INTERVAL"] == "20", "numbers become strings"
+    assert os.environ["LISTEN_ON_START"] == "false", "bool is lower case, not Python True"
+    assert "BLANK" not in os.environ, "empty value is skipped"
+    assert "MISSING" not in os.environ, "null value is skipped"
+    assert os.environ["AUDIO_DEVICE"] == "real-env-wins", "real environment wins"
+    _load_options_json("/definitely/not/here.json")  # absent file must not raise
     print("ok")
 
 

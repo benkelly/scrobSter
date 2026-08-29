@@ -22,7 +22,7 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - name: Logic self-check
-        run: python test_dedup.py
+        run: python test_scrobster.py
       - name: Import and compile every module
         run: |
           python -m compileall -q scrobster
