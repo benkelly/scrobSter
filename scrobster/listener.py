@@ -38,6 +38,21 @@ def segment_seconds(chunk_seconds: int) -> int:
 REPEAT_TOLERANCE_SECONDS = 45
 # Never count two plays of one track closer together than this.
 MIN_REPEAT_GAP_SECONDS = 30
+# A "now playing" mark expires after a few minutes, so refresh it while the same
+# track keeps matching.
+NOW_PLAYING_REFRESH_SECONDS = 120
+
+
+def should_announce(track_key, now, prev) -> bool:
+    """True when the service needs a fresh "playing now" mark.
+
+    `prev` is (track_key, timestamp) of the last mark sent, or None. A new track
+    is announced at once, and a track that keeps playing is refreshed so the mark
+    does not expire.
+    """
+    if prev is None or prev[0] != track_key:
+        return True
+    return now - prev[1] >= NOW_PLAYING_REFRESH_SECONDS
 
 
 def should_scrobble(track_key, now, offset, last_plays, fallback_cooldown_s) -> bool:
@@ -148,6 +163,7 @@ class Listener:
             log.warning("CHUNK_SECONDS=%s, but only %ss is fingerprinted; longer windows"
                         " stop matching", config.CHUNK_SECONDS, MAX_SEGMENT_SECONDS)
         self._last_plays = {}  # track_key -> (ts, offset); in-memory, restart forgets
+        self._now_playing = None  # (track_key, ts) of the last "playing now" mark
         self._warned_silent = False
         self.last_match = None
         self.last_error = None
@@ -215,6 +231,13 @@ class Listener:
     async def _on_match(self, info, source="server"):
         now = int(time.time())
         self.last_match = {**info, "ts": now, "source": source}
+
+        # Show it as playing now, even while the same play continues and no new
+        # scrobble is due.
+        if should_announce(info["track_key"], now, self._now_playing):
+            self._now_playing = (info["track_key"], now)
+            await scrobble.now_playing_all(info["artist"], info["title"], info["album"])
+
         if not should_scrobble(info["track_key"], now, info.get("offset"),
                                self._last_plays, config.RESCROBBLE_MINUTES * 60):
             return

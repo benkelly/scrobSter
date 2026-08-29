@@ -4,8 +4,9 @@ import math
 import struct
 import wave
 
-from scrobster.listener import (MAX_SEGMENT_SECONDS, parse_track, peak_dbfs,
-                                segment_seconds, should_scrobble)
+from scrobster.listener import (MAX_SEGMENT_SECONDS, NOW_PLAYING_REFRESH_SECONDS,
+                                parse_track, peak_dbfs, segment_seconds,
+                                should_announce, should_scrobble)
 
 
 def _wav(amplitude):
@@ -64,6 +65,13 @@ def main():
     assert peak_dbfs(_wav(32767)) > -1, "full scale"
     assert -7 < peak_dbfs(_wav(16384)) < -5, "half scale is about -6 dBFS"
     assert peak_dbfs(_wav(0)) < -80 < peak_dbfs(_wav(16384)), "silence threshold separates them"
+
+    # "playing now" is announced on change, then refreshed before it expires
+    assert should_announce("a", 1000, None), "first match announces"
+    assert should_announce("a", 1000, ("b", 999)), "track changed, announce"
+    assert not should_announce("a", 1010, ("a", 1000)), "same track, mark still fresh"
+    assert not should_announce("a", 1000 + NOW_PLAYING_REFRESH_SECONDS - 1, ("a", 1000))
+    assert should_announce("a", 1000 + NOW_PLAYING_REFRESH_SECONDS, ("a", 1000)), "refresh"
 
     # oversized fingerprint windows stop matching, so they must be capped
     assert segment_seconds(10) == 10, "short window passes through"

@@ -4,7 +4,18 @@ Self-hosted background-audio scrobbler. It listens to an audio input (mic or lin
 
 ## How it works
 
-Every 12 seconds, ffmpeg records a 10-second chunk from your audio device. [shazamio](https://github.com/shazamio/shazamio) builds an audio signature locally and asks the Shazam API for a match. A new track scrobbles to every configured service. The same track does not scrobble again for 30 minutes. A web page shows the current match and the history. The JSON API serves mobile clients and Home Assistant.
+Every 15 seconds, ffmpeg records a 12-second chunk from your audio device.
+[shazamio](https://github.com/shazamio/shazamio) builds an audio signature
+locally and asks the Shazam API for a match.
+
+A match does two things. It marks the track as playing now, so your profile
+shows the live "scrobbling now" line while the song continues. It also scrobbles
+the track once per play. A track that keeps playing is not scrobbled again, but
+a track that restarts is, because scrobSter compares the match offset. See
+Recognition limits.
+
+A web page shows the current match and the history. The JSON API serves mobile
+clients and Home Assistant.
 
 ## Requirements
 
