@@ -1,0 +1,94 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # A registry path must be lower case, and the repository name is not.
+  IMAGE: ghcr.io/${{ github.repository_owner }}/scrobster
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Logic self-check
+        run: python test_dedup.py
+      - name: Import and compile every module
+        run: |
+          python -m compileall -q scrobster
+          python -c "from scrobster import app, auth, listener, scrobble, db"
+
+  docker:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      # Build for this runner first, so the image is proven to start before
+      # anything is published.
+      - name: Build for smoke test
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: scrobster:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test the image
+        run: |
+          docker run -d --name smoke -p 8000:8000 -e LISTEN_ON_START=0 scrobster:ci
+          for _ in $(seq 1 30); do
+            curl -sf http://localhost:8000/ >/dev/null && break
+            sleep 2
+          done
+          curl -sf http://localhost:8000/ >/dev/null
+          curl -sf http://localhost:8000/api/status | grep -q '"listening":false'
+          docker exec smoke ffmpeg -version >/dev/null
+          test "$(docker exec smoke id -u)" = "1000"
+          docker rm -f smoke
+
+      - name: Log in to GitHub Packages
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,format=short
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

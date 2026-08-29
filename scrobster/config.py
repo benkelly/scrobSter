@@ -23,6 +23,21 @@ def _load_env_file(path=".env"):
 
 _load_env_file()
 
+
+def _drop_stale_cert_file():
+    """Ignore SSL_CERT_FILE when it points at a file that is not there.
+
+    macOS python.org builds need this variable, so it ends up in .env. Carrying
+    that .env into a container would otherwise break every HTTPS call, because
+    the path does not exist there and the system certificates are fine.
+    """
+    cert = os.environ.get("SSL_CERT_FILE")
+    if cert and not pathlib.Path(cert).is_file():
+        del os.environ["SSL_CERT_FILE"]
+
+
+_drop_stale_cert_file()
+
 _darwin = sys.platform == "darwin"
 
 AUDIO_BACKEND = os.environ.get("AUDIO_BACKEND", "avfoundation" if _darwin else "alsa")

@@ -1,0 +1,10 @@
+.git
+.github
+.venv
+.env
+*.db
+__pycache__
+**/__pycache__
+*.pyc
+README.md
+LICENSE

@@ -1,0 +1,22 @@
+services:
+  scrobster:
+    image: ghcr.io/benkelly/scrobster:latest
+    container_name: scrobster
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - scrobster-data:/data
+    # Read the sound card. `group_add` gives the unprivileged user permission.
+    devices:
+      - /dev/snd:/dev/snd
+    group_add:
+      - audio
+    env_file:
+      - .env
+    environment:
+      AUDIO_BACKEND: alsa
+      AUDIO_DEVICE: default
+
+volumes:
+  scrobster-data:

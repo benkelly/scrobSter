@@ -138,17 +138,34 @@ Index 0 is not always the microphone. On a Mac with virtual audio software, inde
 
 ## Docker (Linux host)
 
+Images are published to GitHub Packages for `linux/amd64` and `linux/arm64`, so
+a Raspberry Pi works.
+
 ```sh
-docker build -t scrobster .
 docker run -d --name scrobster \
-  --device /dev/snd \
+  --device /dev/snd --group-add audio \
   -p 8000:8000 \
   -v scrobster-data:/data \
   -e LISTENBRAINZ_TOKEN=your-token \
-  scrobster
+  ghcr.io/benkelly/scrobster:latest
 ```
 
-Docker Desktop on macOS cannot reach the microphone. Run bare on macOS.
+Or use the compose file in this repository:
+
+```sh
+docker compose up -d
+```
+
+Tags: `latest` for the main branch, `1.2.3` and `1.2` for a release, and a short
+commit SHA for every build.
+
+Notes:
+
+- `--group-add audio` is required. The container runs as an unprivileged user,
+  and reading the sound card needs the host audio group.
+- Docker Desktop on macOS cannot reach the microphone. Run bare on macOS.
+- `SSL_CERT_FILE` is only for macOS. scrobSter ignores it when the file is
+  missing, so the same `.env` works in a container.
 
 ## Two ways to listen
 
