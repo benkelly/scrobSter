@@ -84,6 +84,37 @@ async def _lb_submit(base_url, token, artist, title, album, ts=None):
             r.raise_for_status()
 
 
+async def _lb_clear(base_url, token):
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
+        async with s.post(f"{base_url.rstrip('/')}/1/playing-now/delete", json={},
+                          headers={"Authorization": f"Token {token}"}) as r:
+            r.raise_for_status()
+
+
+async def clear_now_playing_all() -> dict:
+    """Remove the playing-now mark once the music stops.
+
+    ListenBrainz has an endpoint for this. Last.fm has none, so its mark stays
+    until the service drops it a few minutes later.
+    """
+    results = {}
+    for name in enabled_services():
+        if name in ("lastfm", "librefm"):
+            results[name] = "expires on its own"
+            continue
+        try:
+            if name == "listenbrainz":
+                await _lb_clear(config.LISTENBRAINZ_URL, config.LISTENBRAINZ_TOKEN)
+            elif name == "maloja":
+                await _lb_clear(config.MALOJA_URL.rstrip("/") + "/apis/listenbrainz",
+                                config.MALOJA_KEY)
+            results[name] = "cleared"
+        except Exception as e:
+            log.debug("clearing now playing on %s failed: %s", name, e)
+            results[name] = f"error: {e}"[:200]
+    return results
+
+
 async def now_playing_all(artist, title, album) -> dict:
     """Mark the track as playing now on each service.
 

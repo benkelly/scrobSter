@@ -30,6 +30,9 @@ AUDIO_DEVICE = os.environ.get("AUDIO_DEVICE", ":0" if _darwin else "default")
 CHUNK_SECONDS = int(os.environ.get("CHUNK_SECONDS", "12"))
 MATCH_INTERVAL = int(os.environ.get("MATCH_INTERVAL", "15"))  # min seconds per cycle
 RESCROBBLE_MINUTES = int(os.environ.get("RESCROBBLE_MINUTES", "30"))
+# Clear the playing-now mark after this long with no match. Keep it well above one
+# song, because matches drop out during quiet passages and the mark would flicker.
+NOW_PLAYING_STOP_SECONDS = int(os.environ.get("NOW_PLAYING_STOP_SECONDS", "180"))
 DB_PATH = os.environ.get("DB_PATH", "scrobster.db")
 PORT = int(os.environ.get("PORT", "8000"))
 API_TOKEN = os.environ.get("API_TOKEN")  # unset = no auth (LAN default)

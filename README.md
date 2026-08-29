@@ -14,6 +14,14 @@ the track once per play. A track that keeps playing is not scrobbled again, but
 a track that restarts is, because scrobSter compares the match offset. See
 Recognition limits.
 
+When the music stops, the mark is removed. After `NOW_PLAYING_STOP_SECONDS` with
+no match, scrobSter clears it, and it also clears it when you stop the listener.
+ListenBrainz and Maloja are cleared through an API call. Last.fm has no method to
+clear a mark, so its own copy disappears a few minutes later.
+
+The default of 180 seconds is deliberate. Matches drop out during quiet
+passages, so a shorter limit would make the mark flicker during a song.
+
 A web page shows the current match and the history. The JSON API serves mobile
 clients and Home Assistant.
 
@@ -66,7 +74,8 @@ A service is enabled when all of its variables are set.
 | `AUDIO_DEVICE` | `:0` (macOS) / `default` (Linux) | ffmpeg input device |
 | `CHUNK_SECONDS` | `12` | recorded seconds per match attempt; values above 14 are capped |
 | `MATCH_INTERVAL` | `15` | minimum seconds per cycle; increase if rate-limited |
-| `RESCROBBLE_MINUTES` | `30` | cooldown before the same track scrobbles again |
+| `RESCROBBLE_MINUTES` | `30` | fallback cooldown, used only when a match has no offset |
+| `NOW_PLAYING_STOP_SECONDS` | `180` | clear the playing-now mark after this long with no match |
 | `DB_PATH` | `scrobster.db` | SQLite history file |
 | `PORT` | `8000` | web/API port |
 | `API_TOKEN` | unset | if set, `/api/*` requires `Authorization: Bearer <token>` |

@@ -6,7 +6,7 @@ import wave
 
 from scrobster.listener import (MAX_SEGMENT_SECONDS, NOW_PLAYING_REFRESH_SECONDS,
                                 parse_track, peak_dbfs, segment_seconds,
-                                should_announce, should_scrobble)
+                                should_announce, should_clear, should_scrobble)
 
 
 def _wav(amplitude):
@@ -72,6 +72,13 @@ def main():
     assert not should_announce("a", 1010, ("a", 1000)), "same track, mark still fresh"
     assert not should_announce("a", 1000 + NOW_PLAYING_REFRESH_SECONDS - 1, ("a", 1000))
     assert should_announce("a", 1000 + NOW_PLAYING_REFRESH_SECONDS, ("a", 1000)), "refresh"
+
+    # the mark is cleared once the music stops, but not during a quiet passage
+    stop_after = 180
+    assert not should_clear(9999, 1000, None, stop_after), "no mark, nothing to clear"
+    assert not should_clear(1030, 1000, ("a", 1000), stop_after), "still matching"
+    assert not should_clear(1000 + stop_after - 1, 1000, ("a", 1000), stop_after)
+    assert should_clear(1000 + stop_after, 1000, ("a", 1000), stop_after), "music stopped"
 
     # oversized fingerprint windows stop matching, so they must be capped
     assert segment_seconds(10) == 10, "short window passes through"

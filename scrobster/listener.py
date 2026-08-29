@@ -43,6 +43,19 @@ MIN_REPEAT_GAP_SECONDS = 30
 NOW_PLAYING_REFRESH_SECONDS = 120
 
 
+def should_clear(now, last_match_at, now_playing, stop_after_s) -> bool:
+    """True when a playing-now mark is stale and the music has stopped.
+
+    Only a mark that exists can go stale. The test uses the last MATCH, not the
+    last mark, because the mark is refreshed on a timer while a song plays.
+    """
+    if now_playing is None:
+        return False
+    if last_match_at is None:
+        return True
+    return now - last_match_at >= stop_after_s
+
+
 def should_announce(track_key, now, prev) -> bool:
     """True when the service needs a fresh "playing now" mark.
 
@@ -164,6 +177,7 @@ class Listener:
                         " stop matching", config.CHUNK_SECONDS, MAX_SEGMENT_SECONDS)
         self._last_plays = {}  # track_key -> (ts, offset); in-memory, restart forgets
         self._now_playing = None  # (track_key, ts) of the last "playing now" mark
+        self._last_match_at = None  # when audio was last identified
         self._warned_silent = False
         self.last_match = None
         self.last_error = None
@@ -189,6 +203,9 @@ class Listener:
             except asyncio.CancelledError:
                 pass
             self._task = None
+        if self._now_playing:  # stopping on purpose means nothing is playing
+            self._now_playing = None
+            await scrobble.clear_now_playing_all()
 
     async def _loop(self):
         log.info("listening: %s %s, one match per %ss",
@@ -211,6 +228,7 @@ class Listener:
                     self._warned_silent = False
                     await self.match_bytes(wav)
                     self.last_error = None
+                await self._clear_if_stopped()
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -218,6 +236,15 @@ class Listener:
                 log.warning("cycle failed: %s", e)
             elapsed = time.monotonic() - cycle_start
             await asyncio.sleep(max(0, config.MATCH_INTERVAL - elapsed))
+
+    async def _clear_if_stopped(self):
+        """Drop the playing-now mark once the music has stopped."""
+        if should_clear(int(time.time()), self._last_match_at, self._now_playing,
+                        config.NOW_PLAYING_STOP_SECONDS):
+            self._now_playing = None
+            log.info("no match for %ss, clearing the playing-now mark",
+                     config.NOW_PLAYING_STOP_SECONDS)
+            await scrobble.clear_now_playing_all()
 
     async def match_bytes(self, wav: bytes, source: str = "server") -> dict | None:
         """Identify WAV bytes and scrobble a new track. Shared by the capture loop and
@@ -231,6 +258,7 @@ class Listener:
     async def _on_match(self, info, source="server"):
         now = int(time.time())
         self.last_match = {**info, "ts": now, "source": source}
+        self._last_match_at = now
 
         # Show it as playing now, even while the same play continues and no new
         # scrobble is due.
