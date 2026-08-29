@@ -1,3 +1,5 @@
+<img src="icon.png" alt="scrobSter" width="120" align="right">
+
 # scrobSter
 
 Self-hosted background-audio scrobbler. It listens to an audio input (mic or line-in), identifies songs with Shazam, and scrobbles them to Last.fm, Libre.fm, ListenBrainz, and Maloja. Point it at a radio, a TV, or the room.
