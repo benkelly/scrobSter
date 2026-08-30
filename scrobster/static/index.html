@@ -5,103 +5,191 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>scrobSter</title>
 <link rel="icon" href="data:,">
-<style>
-  :root { color-scheme: dark; }
-  body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #111418;
-         color: #e6e6e6; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
-  h1 { font-size: 1.3rem; letter-spacing: .05em; }
-  button { background: #1f6feb; color: #fff; border: 0; border-radius: 6px;
-           padding: .5rem 1rem; font: inherit; cursor: pointer; }
-  button.off { background: #444c56; }
-  #micnote { margin-top: .5rem; font-size: .8rem; min-height: 1rem; }
-  #now { margin: 1rem 0; padding: 1rem; background: #161b22; border-radius: 8px;
-         display: flex; gap: 1rem; align-items: center; min-height: 64px; }
-  #now img { width: 64px; height: 64px; border-radius: 6px; }
-  table { width: 100%; border-collapse: collapse; font-size: .85rem; }
-  td, th { padding: .4rem .5rem; border-bottom: 1px solid #21262d; text-align: left;
-           vertical-align: top; }
-  .ok { color: #3ddc84; } .err { color: #f85149; } .muted { color: #8b949e; }
-  img.thumb { width: 32px; height: 32px; border-radius: 4px; }
-</style>
+<link rel="stylesheet" href="app.css">
 </head>
 <body>
-<h1>scrobSter <span id="dot">&#9679;</span></h1>
-<div>
-  <button id="toggle">&hellip;</button>
-  <button id="mic" class="off">use this device&rsquo;s mic</button>
-  <span id="services" class="muted"></span>
+<div class="wrap">
+  <div class="between">
+    <h1>scrob<span class="accent">S</span>ter <span id="dot" class="dot"></span></h1>
+    <div class="row small">
+      <span id="who" class="muted"></span>
+      <button id="signout" class="ghost small">Sign out</button>
+    </div>
+  </div>
+
+  <nav role="tablist">
+    <button role="tab" data-view="listen" aria-selected="true">Listening</button>
+    <button role="tab" data-view="settings" aria-selected="false">Settings</button>
+    <button role="tab" data-view="users" aria-selected="false" id="tab-users" hidden>Users</button>
+  </nav>
+
+  <!-- Listening ------------------------------------------------------------->
+  <section id="view-listen">
+    <div class="card">
+      <div class="between">
+        <div class="row">
+          <button id="toggle">&hellip;</button>
+          <button id="mic" class="ghost">Use this device&rsquo;s mic</button>
+        </div>
+        <span id="level" class="muted small"></span>
+      </div>
+      <p id="micnote" class="muted small"></p>
+    </div>
+
+    <h2>Now</h2>
+    <div class="card" id="now"><span class="muted">Loading&hellip;</span></div>
+
+    <h2>Your scrobbles</h2>
+    <table>
+      <thead><tr><th></th><th>Track</th><th>Time</th><th>Sent to</th></tr></thead>
+      <tbody id="history"></tbody>
+    </table>
+    <p id="empty" class="muted small hidden">
+      Nothing yet. Connect a service under Settings, then play some music.
+    </p>
+  </section>
+
+  <!-- Settings -------------------------------------------------------------->
+  <section id="view-settings" class="hidden">
+    <h2>Room microphone</h2>
+    <div class="card between">
+      <div>
+        <div>Scrobble what the room microphone hears</div>
+        <div class="muted small">
+          The shared microphone cannot tell who is listening, so this is off
+          until you turn it on.
+        </div>
+      </div>
+      <input type="checkbox" id="room_mic" style="width:auto">
+    </div>
+
+    <h2>Services</h2>
+    <div class="card" id="services"></div>
+
+    <h2>Your API token</h2>
+    <div class="card">
+      <p class="muted small">
+        For the Home Assistant sensor and scripts. Send it as
+        <code>Authorization: Bearer &lt;token&gt;</code>.
+      </p>
+      <p><code id="apitoken">&hellip;</code></p>
+      <button id="newtoken" class="ghost">Replace token</button>
+    </div>
+
+    <h2>Password</h2>
+    <form class="card narrow" id="pwform" style="width:100%">
+      <label>Current password<input id="pw_current" type="password" required></label>
+      <label>New password<input id="pw_new" type="password" minlength="8" required></label>
+      <button type="submit">Change password</button>
+      <span id="pwnote" class="small"></span>
+    </form>
+  </section>
+
+  <!-- Users ----------------------------------------------------------------->
+  <section id="view-users" class="hidden">
+    <h2>Accounts</h2>
+    <table>
+      <thead><tr><th>User</th><th>Role</th><th>Room mic</th><th></th></tr></thead>
+      <tbody id="users"></tbody>
+    </table>
+
+    <h2>Add someone</h2>
+    <form class="card narrow" id="userform" style="width:100%">
+      <label>User name<input id="new_user" required></label>
+      <label>Password<input id="new_pass" type="password" minlength="8" required></label>
+      <label class="row"><input type="checkbox" id="new_admin" style="width:auto">
+        <span>Administrator</span></label>
+      <button type="submit">Create account</button>
+      <span id="usernote" class="small"></span>
+    </form>
+  </section>
 </div>
-<div id="micnote" class="muted"></div>
-<div id="now" class="muted">waiting&hellip;</div>
-<table id="history">
-  <thead><tr><th></th><th>track</th><th>time</th><th>scrobbled</th></tr></thead>
-  <tbody></tbody>
-</table>
+
 <script>
 const $ = s => document.querySelector(s);
-const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const authHeaders = () => localStorage.token ? {authorization: "Bearer " + localStorage.token} : {};
+const $$ = s => [...document.querySelectorAll(s)];
+const esc = s => String(s ?? "").replace(/[&<>"]/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fmt = ts => new Date(ts * 1000).toLocaleString();
+
+let me = null, listening = false;
 
 async function api(path, opts = {}) {
-  const r = await fetch(path, {...opts, headers: {...authHeaders(), ...(opts.headers || {})}});
+  const r = await fetch(path, {credentials: "same-origin", ...opts});
   if (r.status === 401) {
-    const t = prompt("API token:");
-    if (t) { localStorage.token = t; return api(path, opts); }
+    // Navigate away and never settle, so callers do not raise while the browser
+    // is already leaving the page.
+    location.href = "login";
+    return new Promise(() => {});
   }
-  if (!r.ok) throw new Error("HTTP " + r.status);
-  return r.json();
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    throw new Error(body.detail || `HTTP ${r.status}`);
+  }
+  return r.status === 204 ? null : r.json();
 }
+const send = (path, method, body) => api(path, {
+  method, headers: {"content-type": "application/json"}, body: JSON.stringify(body)});
 
-let listening = false;
-const fmtTs = ts => new Date(ts * 1000).toLocaleString();
+// --- tabs ---
+$$('nav button').forEach(b => b.onclick = () => {
+  $$('nav button').forEach(x => x.setAttribute("aria-selected", String(x === b)));
+  ["listen", "settings", "users"].forEach(v =>
+    $(`#view-${v}`).classList.toggle("hidden", v !== b.dataset.view));
+  if (b.dataset.view === "settings") loadServices();
+  if (b.dataset.view === "users") loadUsers();
+});
 
+// --- listening ---
 async function refresh() {
-  try {
-    const st = await api("api/status");
-    listening = st.listening;
-    $("#dot").style.color = listening ? "#3ddc84" : "#8b949e";
-    $("#toggle").textContent = listening ? "stop listening" : "start listening";
-    $("#toggle").className = listening ? "" : "off";
-    const lvl = st.level_db == null ? ""
-      : `  |  input ${st.level_db} dBFS${st.level_db < -80 ? "  \u26a0 SILENT \u2014 wrong AUDIO_DEVICE?" : ""}`;
-    $("#services").textContent =
-      (st.services.length ? "\u2192 " + st.services.join(", ") : "no services configured") + lvl;
-    const m = st.last_match;
-    const tries = st.attempts
-      ? `${st.attempts} listen${st.attempts === 1 ? "" : "s"}, last ${fmtTs(st.last_attempt).split(", ")[1] || ""}`
-      : "starting\u2026";
-    $("#now").innerHTML = m
-      ? `${m.art_url ? `<img src="${esc(m.art_url)}" alt="">` : ""}<div><b>${esc(m.title)}</b><br>${esc(m.artist)}<br><span class="muted">${fmtTs(m.ts)}${m.source ? " \u00b7 via " + esc(m.source) : ""} \u00b7 ${esc(tries)}</span></div>`
-      : `<div><span class="muted">${esc(st.last_error || "no match yet \u2014 " + tries)}</span></div>`;
-    const rows = await api("api/recent?limit=50");
-    $("#history tbody").innerHTML = rows.map(r => `<tr>
-      <td>${r.art_url ? `<img class="thumb" src="${esc(r.art_url)}" alt="">` : ""}</td>
-      <td><b>${esc(r.title)}</b><br>${esc(r.artist)}${r.album ? `<br><span class="muted">${esc(r.album)}</span>` : ""}</td>
-      <td class="muted">${fmtTs(r.ts)}</td>
-      <td>${Object.entries(r.services).map(([s, v]) =>
-          `<span class="${v === "ok" ? "ok" : "err"}" title="${esc(v)}">${esc(s)}</span>`).join(" ")}</td>
-    </tr>`).join("");
-  } catch (e) {
-    $("#now").textContent = "error: " + e.message;
-  }
+  let st;
+  try { st = await api("api/status"); } catch { return; }
+  listening = st.listening;
+  $("#dot").className = "dot" + (listening ? " live" : "");
+  $("#toggle").textContent = listening ? "Stop listening" : "Start listening";
+  $("#toggle").disabled = !me?.is_admin;
+  $("#toggle").title = me?.is_admin ? "" : "Only an administrator can change this";
+  const lvl = st.level_db == null ? "" : `input ${st.level_db} dBFS`;
+  const silent = st.level_db != null && st.level_db < -80;
+  $("#level").innerHTML = (st.services.length
+      ? `sending to ${esc(st.services.join(", "))}` : `<span class="err">no service connected</span>`)
+    + (lvl ? ` &middot; ${esc(lvl)}` : "")
+    + (silent ? ` <span class="err">&#9888; silent, check the audio input</span>` : "");
+
+  const m = st.last_match;
+  const tries = st.attempts ? `${st.attempts} listens` : "starting\u2026";
+  $("#now").innerHTML = m
+    ? `${m.art_url ? `<img src="${esc(m.art_url)}" alt="">` : ""}
+       <div><b>${esc(m.title)}</b><br>${esc(m.artist)}
+       <br><span class="muted small">${esc(fmt(m.ts))} &middot; via ${esc(m.source || "server")}
+       &middot; ${esc(tries)}</span></div>`
+    : `<span class="muted">${esc(st.last_error || "No match yet \u2014 " + tries)}</span>`;
+
+  const rows = await api("api/recent?limit=50");
+  $("#empty").classList.toggle("hidden", rows.length > 0);
+  $("#history").innerHTML = rows.map(r => `<tr>
+    <td>${r.art_url ? `<img class="thumb" src="${esc(r.art_url)}" alt="">` : ""}</td>
+    <td><b>${esc(r.title)}</b><br>${esc(r.artist)}
+        ${r.album ? `<br><span class="muted small">${esc(r.album)}</span>` : ""}</td>
+    <td class="muted">${esc(fmt(r.ts))}</td>
+    <td>${Object.entries(r.services).map(([s, v]) =>
+        `<span class="badge ${v === "ok" ? "ok" : "err"}" title="${esc(v)}">${esc(s)}</span>`
+      ).join("")}</td></tr>`).join("");
 }
 
 $("#toggle").onclick = async () => {
-  await api("api/listen", {method: "POST",
-    headers: {"content-type": "application/json"},
-    body: JSON.stringify({on: !listening})});
-  refresh();
+  try { await send("api/listen", "POST", {on: !listening}); refresh(); }
+  catch (e) { alert(e.message); }
 };
 
-// --- browser mic: record a clip, post it, repeat. Server does the matching. ---
+// --- browser microphone ---
 const CLIP_MS = 12000, GAP_MS = 3000;
 let micOn = false, micStream = null;
 const micNote = t => { $("#micnote").textContent = t; };
 
 function recordClip(stream, ms) {
   return new Promise((resolve, reject) => {
-    let rec;
-    const chunks = [];
+    let rec; const chunks = [];
     try { rec = new MediaRecorder(stream); } catch (e) { return reject(e); }
     rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
     rec.onerror = e => reject(e.error || new Error("recorder failed"));
@@ -117,27 +205,19 @@ async function micLoop() {
     micStream = await navigator.mediaDevices.getUserMedia({audio: {
       echoCancellation: false, noiseSuppression: false, autoGainControl: false}});
   } catch (e) {
-    micOn = false;
-    paintMic();
-    micNote("microphone blocked: " + e.message);
-    return;
+    micOn = false; paintMic(); micNote("Microphone blocked: " + e.message); return;
   }
   while (micOn) {
     try {
       const clip = await recordClip(micStream, CLIP_MS);
-      const r = await fetch("api/match", {
-        method: "POST",
-        headers: {...authHeaders(), "content-type": "application/octet-stream"},
-        body: clip});
+      const r = await fetch("api/match", {method: "POST", credentials: "same-origin",
+        headers: {"content-type": "application/octet-stream"}, body: clip});
       if (!r.ok) throw new Error("HTTP " + r.status);
       const j = await r.json();
-      micNote(j.match
-        ? `matched ${j.match.artist} \u2014 ${j.match.title}`
-        : `no match (input ${j.level_db} dBFS)`);
+      micNote(j.match ? `Matched ${j.match.artist} \u2014 ${j.match.title}`
+                      : `No match (input ${j.level_db} dBFS)`);
       refresh();
-    } catch (e) {
-      micNote("error: " + e.message);
-    }
+    } catch (e) { micNote("Error: " + e.message); }
     if (micOn) await new Promise(r => setTimeout(r, GAP_MS));
   }
   micStream.getTracks().forEach(t => t.stop());
@@ -145,24 +225,155 @@ async function micLoop() {
 }
 
 function paintMic() {
-  $("#mic").textContent = micOn ? "stop this device\u2019s mic" : "use this device\u2019s mic";
-  $("#mic").className = micOn ? "" : "off";
+  $("#mic").textContent = micOn ? "Stop this device\u2019s mic" : "Use this device\u2019s mic";
 }
 
 $("#mic").onclick = () => {
   if (!navigator.mediaDevices?.getUserMedia) {
-    micNote("this browser blocks mic capture without HTTPS (localhost is allowed)");
+    micNote("This browser only allows microphone access over https, or on localhost.");
     return;
   }
-  micOn = !micOn;
-  paintMic();
-  if (micOn) { micNote("listening from this device\u2026"); micLoop(); }
-  else micNote("");
+  micOn = !micOn; paintMic();
+  if (micOn) { micNote("Listening from this device\u2026"); micLoop(); } else micNote("");
 };
 
-paintMic();
-refresh();
-setInterval(refresh, 5000);
+// --- settings ---
+const FIELDS = {
+  listenbrainz: [["token", "User token", "password"], ["url", "Server URL (optional)", "text"]],
+  maloja: [["url", "Server URL", "text"], ["key", "API key", "password"]],
+  librefm: [["username", "User name", "text"], ["password_hash", "Password md5 hash", "password"]],
+};
+const TITLES = {lastfm: "Last.fm", librefm: "Libre.fm",
+                listenbrainz: "ListenBrainz", maloja: "Maloja"};
+
+async function loadServices() {
+  const s = await api("api/services");
+  $("#room_mic").checked = !!me.room_mic;
+  $("#apitoken").textContent = me.api_token || "(none)";
+  $("#services").innerHTML = Object.keys(TITLES).map(name => {
+    const info = s[name];
+    const state = info.connected
+      ? `<span class="badge ok">connected${info.username ? " as " + esc(info.username) : ""}</span>`
+      : `<span class="badge muted">not connected</span>`;
+    if (name === "lastfm") {
+      return `<div class="service"><div class="between">
+        <div><b>${TITLES[name]}</b> ${state}</div>
+        <div class="row">
+          ${info.app_registered
+            ? `<button class="ghost" data-lastfm="start">${info.connected ? "Reconnect" : "Connect"}</button>`
+            : `<span class="muted small">Set LASTFM_API_KEY and LASTFM_API_SECRET first</span>`}
+          ${info.connected ? `<button class="danger" data-clear="${name}">Remove</button>` : ""}
+        </div></div>
+        <p id="lastfm-step" class="muted small"></p></div>`;
+    }
+    return `<div class="service"><div class="between">
+      <div><b>${TITLES[name]}</b> ${state}</div>
+      ${info.connected ? `<button class="danger" data-clear="${name}">Remove</button>` : ""}
+      </div>
+      <form data-service="${name}" class="row" style="margin-top:.5rem">
+        ${FIELDS[name].map(([k, label, type]) =>
+          `<label class="grow">${label}
+            <input name="${k}" type="${type}" ${k === "url" && name === "maloja"
+              ? 'placeholder="http://maloja:42010"' : ""}></label>`).join("")}
+        <button type="submit" style="align-self:end">Save</button>
+      </form></div>`;
+  }).join("");
+
+  $$("#services form").forEach(f => f.onsubmit = async e => {
+    e.preventDefault();
+    const body = Object.fromEntries([...new FormData(f)].filter(([, v]) => v !== ""));
+    try { await send(`api/services/${f.dataset.service}`, "PUT", body); loadServices(); }
+    catch (err) { alert(err.message); }
+  });
+  $$("[data-clear]").forEach(b => b.onclick = async () => {
+    await api(`api/services/${b.dataset.clear}`, {method: "DELETE"});
+    loadServices();
+  });
+  const start = $('[data-lastfm="start"]');
+  if (start) start.onclick = lastfmConnect;
+}
+
+async function lastfmConnect() {
+  const step = $("#lastfm-step");
+  step.textContent = "Asking Last.fm\u2026";
+  let r;
+  try { r = await send("api/lastfm/start", "POST", {}); }
+  catch (e) { step.innerHTML = `<span class="err">${esc(e.message)}</span>`; return; }
+  window.open(r.url, "_blank", "noopener");
+  step.innerHTML = `Approve scrobSter in the new tab, then
+    <button id="lastfm-done" class="ghost">I approved it</button>`;
+  $("#lastfm-done").onclick = async () => {
+    step.textContent = "Finishing\u2026";
+    try {
+      const done = await send("api/lastfm/finish", "POST", {token: r.token});
+      step.innerHTML = `<span class="ok">Connected as ${esc(done.username)}</span>`;
+      me = await api("api/me"); loadServices();
+    } catch (e) { step.innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+  };
+}
+
+$("#room_mic").onchange = async e => {
+  me = {...me, ...await send("api/me", "PUT", {room_mic: e.target.checked})};
+};
+
+$("#newtoken").onclick = async () => {
+  const r = await send("api/me/token", "POST", {});
+  me.api_token = r.api_token;
+  $("#apitoken").textContent = r.api_token;
+};
+
+$("#pwform").onsubmit = async e => {
+  e.preventDefault();
+  const note = $("#pwnote");
+  try {
+    await send("api/me/password", "POST",
+               {current: $("#pw_current").value, password: $("#pw_new").value});
+    note.className = "small ok"; note.textContent = "Password changed.";
+    e.target.reset();
+  } catch (err) { note.className = "small err"; note.textContent = err.message; }
+};
+
+// --- users ---
+async function loadUsers() {
+  const list = await api("api/users");
+  $("#users").innerHTML = list.map(u => `<tr>
+    <td>${esc(u.username)}</td>
+    <td class="muted">${u.is_admin ? "administrator" : "user"}</td>
+    <td class="muted">${u.room_mic ? "yes" : "no"}</td>
+    <td>${u.id === me.id ? "" :
+      `<button class="danger" data-del="${u.id}">Remove</button>`}</td></tr>`).join("");
+  $$("[data-del]").forEach(b => b.onclick = async () => {
+    if (!confirm("Remove this account and its history?")) return;
+    await api(`api/users/${b.dataset.del}`, {method: "DELETE"});
+    loadUsers();
+  });
+}
+
+$("#userform").onsubmit = async e => {
+  e.preventDefault();
+  const note = $("#usernote");
+  try {
+    await send("api/users", "POST", {username: $("#new_user").value,
+      password: $("#new_pass").value, is_admin: $("#new_admin").checked});
+    note.className = "small ok"; note.textContent = "Account created.";
+    e.target.reset(); loadUsers();
+  } catch (err) { note.className = "small err"; note.textContent = err.message; }
+};
+
+$("#signout").onclick = async () => {
+  await api("api/logout", {method: "POST"});
+  location.href = "login";
+};
+
+// --- start ---
+(async () => {
+  me = await api("api/me");
+  $("#who").textContent = me.username + (me.is_admin ? " (admin)" : "");
+  $("#tab-users").hidden = !me.is_admin;
+  paintMic();
+  refresh();
+  setInterval(refresh, 5000);
+})();
 </script>
 </body>
 </html>

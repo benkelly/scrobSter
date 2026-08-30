@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>scrobSter</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="app.css">
+</head>
+<body class="centred">
+<form id="form" class="card narrow">
+  <h1>scrob<span class="accent">S</span>ter</h1>
+  <p class="muted small">Sign in to see what the room is playing.</p>
+  <label>User name
+    <input id="username" autocomplete="username" autofocus required>
+  </label>
+  <label>Password
+    <input id="password" type="password" autocomplete="current-password" required>
+  </label>
+  <button type="submit">Sign in</button>
+  <p id="error" class="err small"></p>
+</form>
+<script>
+const $ = s => document.querySelector(s);
+$("#form").onsubmit = async e => {
+  e.preventDefault();
+  $("#error").textContent = "";
+  const r = await fetch("api/login", {
+    method: "POST",
+    headers: {"content-type": "application/json"},
+    body: JSON.stringify({username: $("#username").value, password: $("#password").value}),
+  });
+  if (r.ok) { location.href = "."; return; }
+  const body = await r.json().catch(() => ({}));
+  $("#error").textContent = body.detail || `Sign in failed (${r.status})`;
+};
+</script>
+</body>
+</html>

@@ -27,6 +27,11 @@ passages, so a shorter limit would make the mark flicker during a song.
 A web page shows the current match and the history. The JSON API serves mobile
 clients and Home Assistant.
 
+Each person has an account and connects their own scrobbling services in
+Settings. The room microphone is shared, so every user chooses whether to
+receive what it hears. A microphone in a browser is different: that listen
+belongs to the person who recorded it, and goes only to them.
+
 ## Requirements
 
 - Python 3.10 - 3.13
@@ -46,7 +51,7 @@ your secrets stay out of the shell history.
 ```sh
 # .env
 AUDIO_DEVICE=:1
-LISTENBRAINZ_TOKEN=your-token
+ADMIN_PASSWORD=choose-something-long
 ```
 
 Then start it:
@@ -57,6 +62,26 @@ Then start it:
 
 A real environment variable always overrides the file, so Docker and systemd
 work as usual.
+
+Open http://localhost:8000 and sign in as `admin`. Connect your scrobbling
+services under Settings.
+
+Without `ADMIN_PASSWORD`, the first start makes a random password and writes it
+to the log once. Read it there, then change it in Settings.
+
+## Accounts
+
+The first start creates one administrator. An administrator adds more accounts
+under Users, and each person connects their own services.
+
+- **Service credentials belong to a user** and are set in the web page. The
+  variables below only seed the first account, on the very first start.
+- **The Last.fm API key and secret stay in the environment.** They identify this
+  application, not a person, so one registration serves everybody. Each user
+  then authorizes Last.fm in the browser under Settings, which stores a session
+  key for that user alone.
+- **Only an administrator starts or stops the shared microphone.**
+- **Each user gets an API token** in Settings, for Home Assistant and scripts.
 
 Open http://localhost:8000. Toggle listening from the page.
 
@@ -80,15 +105,24 @@ A service is enabled when all of its variables are set.
 | `NOW_PLAYING_STOP_SECONDS` | `180` | clear the playing-now mark after this long with no match |
 | `DB_PATH` | `scrobster.db` | SQLite history file |
 | `PORT` | `8000` | web/API port |
-| `API_TOKEN` | unset | if set, `/api/*` requires `Authorization: Bearer <token>` |
+| `ADMIN_USERNAME` | `admin` | name of the account made on the first start |
+| `ADMIN_PASSWORD` | unset | its password. Without one, a random password is logged once |
+| `TRUST_INGRESS` | `1` | treat Home Assistant ingress requests as the owner, with no second sign-in |
+| `INGRESS_IP` | `172.30.32.2` | the address ingress requests come from |
+| `API_TOKEN` | unset | optional shared token that acts as the owner. Each user also has a personal token |
 | `LISTEN_ON_START` | `1` | start the capture loop at boot |
-| `LASTFM_API_KEY` `LASTFM_API_SECRET` | unset | Last.fm; create a key at https://www.last.fm/api/account/create |
-| `LASTFM_SESSION_KEY` | unset | preferred login. Run `python -m scrobster.auth` to get one |
-| `LASTFM_PASSWORD_HASH` or `LASTFM_PASSWORD` | unset | fallback login if you do not want the browser step |
-| `LIBREFM_USERNAME` + `LIBREFM_PASSWORD_HASH` or `LIBREFM_PASSWORD` | unset | Libre.fm |
-| `LISTENBRAINZ_TOKEN` | unset | token from https://listenbrainz.org/settings/ |
-| `LISTENBRAINZ_URL` | `https://api.listenbrainz.org` | alternative ListenBrainz server |
-| `MALOJA_URL` `MALOJA_KEY` | unset | Maloja base URL + API key |
+| `LASTFM_API_KEY` `LASTFM_API_SECRET` | unset | identifies this application to Last.fm, for every user. Create a key at https://www.last.fm/api/account/create |
+
+These seed the first account only. After that, each user manages their own under
+Settings.
+
+| Variable | Purpose |
+|---|---|
+| `LISTENBRAINZ_TOKEN`, `LISTENBRAINZ_URL` | ListenBrainz |
+| `LASTFM_SESSION_KEY`, `LASTFM_USERNAME` | Last.fm, or authorize in the browser instead |
+| `LASTFM_PASSWORD_HASH` or `LASTFM_PASSWORD` | Last.fm without the browser step |
+| `LIBREFM_USERNAME` + `LIBREFM_PASSWORD_HASH` | Libre.fm |
+| `MALOJA_URL`, `MALOJA_KEY` | Maloja |
 
 ## Connect Last.fm
 
@@ -204,24 +238,35 @@ No wrapper script is needed.
 
 ## API
 
+Every route needs a signed-in session, a personal API token, or a request
+through Home Assistant ingress.
+
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/status` | listening state, last match, input level (`level_db`), enabled services |
-| `POST /api/listen` `{"on": true}` | start or stop the server capture loop |
-| `POST /api/match` (raw audio body) | identify one clip and scrobble it; used by the browser mic |
-| `GET /api/recent?limit=50` | scrobble history |
+| `POST /api/login` `{username, password}` | sign in, sets a session cookie |
+| `GET /api/status` | listening state, last match, input level (`level_db`) |
+| `POST /api/listen` `{"on": true}` | start or stop the shared microphone. Administrator only |
+| `POST /api/match` (raw audio body) | identify one clip and scrobble it for the caller |
+| `GET /api/recent?limit=50` | that user's scrobble history |
+| `GET /api/me`, `PUT /api/me` | account details, and the room microphone choice |
+| `GET/PUT/DELETE /api/services/{name}` | that user's service credentials |
+| `GET/POST/DELETE /api/users` | accounts. Administrator only |
 
-Home Assistant REST sensor:
+Home Assistant REST sensor. Copy the token from Settings:
 
 ```yaml
 sensor:
   - platform: rest
     name: scrobSter
     resource: http://your-host:8000/api/status
+    headers:
+      Authorization: !secret scrobster_token
     value_template: "{{ value_json.last_match.title if value_json.last_match else 'none' }}"
-    json_attributes: [listening, last_match]
+    json_attributes: [listening, last_match, level_db]
     scan_interval: 30
 ```
+
+Put `scrobster_token: Bearer your-token-here` in `secrets.yaml`.
 
 ## Troubleshooting
 

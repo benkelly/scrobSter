@@ -108,7 +108,63 @@ def main():
     assert "MISSING" not in os.environ, "null value is skipped"
     assert os.environ["AUDIO_DEVICE"] == "real-env-wins", "real environment wins"
     _load_options_json("/definitely/not/here.json")  # absent file must not raise
+
+    check_accounts()
+    check_migration()
     print("ok")
+
+
+def check_accounts():
+    from scrobster import accounts
+    stored = accounts.hash_password("correct horse battery")
+    assert accounts.verify_password("correct horse battery", stored), "right password"
+    assert not accounts.verify_password("wrong", stored), "wrong password"
+    assert not accounts.verify_password("correct horse battery", "rubbish"), "bad record"
+    assert stored != accounts.hash_password("correct horse battery"), "salted, not fixed"
+
+
+def check_migration():
+    """Schema 1 kept one row per scrobble with the services in a JSON column.
+    An upgrade must keep that history and give it to the owner."""
+    import sqlite3
+    from scrobster import config
+
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "old.db")
+        old = sqlite3.connect(path)
+        old.execute("""CREATE TABLE matches(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
+            artist TEXT, title TEXT, album TEXT, track_key TEXT, art_url TEXT,
+            services TEXT)""")
+        old.execute("INSERT INTO matches(ts, artist, title, album, track_key,"
+                    " art_url, services) VALUES(?,?,?,?,?,?,?)",
+                    (111, "A", "T", "Al", "k1", "u", '{"listenbrainz": "ok"}'))
+        old.commit()
+        old.close()
+
+        previous = config.DB_PATH
+        config.DB_PATH = path
+        try:
+            from scrobster import accounts, db
+            db.init()
+            owner = accounts.create_user("owner", "password123", is_admin=True)
+            assert owner is not None, "create_user must return the new account"
+
+            assert db.adopt_legacy_history(owner["id"]) == 1, "the old row moves"
+            history = db.recent(owner["id"])
+            assert len(history) == 1, history
+            assert history[0]["title"] == "T", history
+            assert history[0]["services"] == {"listenbrainz": "ok"}, history
+
+            assert db.adopt_legacy_history(owner["id"]) == 0, "moving twice is safe"
+            version = sqlite3.connect(path).execute("PRAGMA user_version").fetchone()[0]
+            assert version == db.SCHEMA_VERSION, version
+
+            # A second user must not see somebody else's history.
+            other = accounts.create_user("other", "password123")
+            assert db.recent(other["id"]) == [], "history is per user"
+        finally:
+            config.DB_PATH = previous
 
 
 if __name__ == "__main__":

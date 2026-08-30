@@ -17,7 +17,7 @@ import wave
 
 from shazamio import Shazam
 
-from . import config, db, scrobble
+from . import accounts, config, db, scrobble
 
 log = logging.getLogger("scrobster")
 
@@ -68,16 +68,18 @@ def should_announce(track_key, now, prev) -> bool:
     return now - prev[1] >= NOW_PLAYING_REFRESH_SECONDS
 
 
-def should_scrobble(track_key, now, offset, last_plays, fallback_cooldown_s) -> bool:
+def should_scrobble(key, now, offset, last_plays, fallback_cooldown_s) -> bool:
     """True when this match is a NEW play rather than the same play continuing.
 
     Shazam reports no track duration, but it reports `offset`, the position inside
     the track. Through one play the offset advances with the clock. When the track
     restarts the offset drops back, and that drop is what marks a repeat.
 
-    `last_plays` maps track_key -> (timestamp, offset) of the last SCROBBLED play.
+    `last_plays` maps a key to (timestamp, offset) of the last SCROBBLED play. The
+    key is per user, so one user hearing a track twice through two microphones
+    still scrobbles it once.
     """
-    prev = last_plays.get(track_key)
+    prev = last_plays.get(key)
     if prev is None:
         return True
     prev_ts, prev_offset = prev
@@ -175,8 +177,9 @@ class Listener:
         if config.CHUNK_SECONDS > MAX_SEGMENT_SECONDS:
             log.warning("CHUNK_SECONDS=%s, but only %ss is fingerprinted; longer windows"
                         " stop matching", config.CHUNK_SECONDS, MAX_SEGMENT_SECONDS)
-        self._last_plays = {}  # track_key -> (ts, offset); in-memory, restart forgets
-        self._now_playing = None  # (track_key, ts) of the last "playing now" mark
+        # (user_id, track_key) -> (ts, offset); in memory, a restart forgets
+        self._last_plays = {}
+        self._now_playing = {}  # user_id -> (track_key, ts) of the last mark
         self._last_match_at = None  # when audio was last identified
         self._warned_silent = False
         self.last_match = None
@@ -203,9 +206,10 @@ class Listener:
             except asyncio.CancelledError:
                 pass
             self._task = None
-        if self._now_playing:  # stopping on purpose means nothing is playing
-            self._now_playing = None
-            await scrobble.clear_now_playing_all()
+        # Stopping on purpose means nothing is playing.
+        for user_id in list(self._now_playing):
+            await scrobble.clear_now_playing_all(accounts.get_credentials(user_id))
+        self._now_playing.clear()
 
     async def _loop(self):
         log.info("listening: %s %s, one match per %ss",
@@ -238,42 +242,64 @@ class Listener:
             await asyncio.sleep(max(0, config.MATCH_INTERVAL - elapsed))
 
     async def _clear_if_stopped(self):
-        """Drop the playing-now mark once the music has stopped."""
-        if should_clear(int(time.time()), self._last_match_at, self._now_playing,
-                        config.NOW_PLAYING_STOP_SECONDS):
-            self._now_playing = None
-            log.info("no match for %ss, clearing the playing-now mark",
-                     config.NOW_PLAYING_STOP_SECONDS)
-            await scrobble.clear_now_playing_all()
+        """Drop the playing-now mark for every user once the music has stopped."""
+        if not should_clear(int(time.time()), self._last_match_at, self._now_playing,
+                            config.NOW_PLAYING_STOP_SECONDS):
+            return
+        log.info("no match for %ss, clearing the playing-now mark",
+                 config.NOW_PLAYING_STOP_SECONDS)
+        for user_id in list(self._now_playing):
+            await scrobble.clear_now_playing_all(accounts.get_credentials(user_id))
+        self._now_playing.clear()
 
-    async def match_bytes(self, wav: bytes, source: str = "server") -> dict | None:
-        """Identify WAV bytes and scrobble a new track. Shared by the capture loop and
-        the browser endpoint, so both go through the same dedup and scrobble path."""
+    async def match_bytes(self, wav: bytes, source: str = "server",
+                          users=None) -> dict | None:
+        """Identify WAV bytes and scrobble for each given user.
+
+        The capture loop passes the users who opted in to the room microphone.
+        The browser endpoint passes only the user who recorded the clip, because
+        that listen is theirs alone.
+        """
         info = parse_track(await self._shazam.recognize(wav))
         if not (info and info["track_key"]):
             return None
-        await self._on_match(info, source)
+        if users is None:
+            users = accounts.room_mic_users()
+        await self._on_match(info, source, users)
         return info
 
-    async def _on_match(self, info, source="server"):
+    async def _on_match(self, info, source, users):
         now = int(time.time())
         self.last_match = {**info, "ts": now, "source": source}
         self._last_match_at = now
+        match_id = None  # written once, and only when somebody scrobbles
 
-        # Show it as playing now, even while the same play continues and no new
-        # scrobble is due.
-        if should_announce(info["track_key"], now, self._now_playing):
-            self._now_playing = (info["track_key"], now)
-            await scrobble.now_playing_all(info["artist"], info["title"], info["album"])
+        for user in users:
+            credentials = accounts.get_credentials(user["id"])
+            if not scrobble.enabled_services(credentials):
+                continue
 
-        if not should_scrobble(info["track_key"], now, info.get("offset"),
-                               self._last_plays, config.RESCROBBLE_MINUTES * 60):
-            return
-        self._last_plays[info["track_key"]] = (now, info.get("offset"))
-        services = await scrobble.scrobble_all(info["artist"], info["title"], info["album"], now)
-        db.add_match(now, info["artist"], info["title"], info["album"],
-                     info["track_key"], info["art_url"], services)
-        log.info("scrobbled: %s - %s -> %s", info["artist"], info["title"], services)
+            # Show it as playing now, even while the same play continues and no
+            # new scrobble is due.
+            if should_announce(info["track_key"], now, self._now_playing.get(user["id"])):
+                self._now_playing[user["id"]] = (info["track_key"], now)
+                await scrobble.now_playing_all(credentials, info["artist"],
+                                               info["title"], info["album"])
+
+            key = (user["id"], info["track_key"])
+            if not should_scrobble(key, now, info.get("offset"), self._last_plays,
+                                   config.RESCROBBLE_MINUTES * 60):
+                continue
+            self._last_plays[key] = (now, info.get("offset"))
+            results = await scrobble.scrobble_all(credentials, info["artist"],
+                                                  info["title"], info["album"], now)
+            if match_id is None:
+                match_id = db.add_match(now, info["artist"], info["title"],
+                                        info["album"], info["track_key"],
+                                        info["art_url"], source)
+            db.add_scrobbles(match_id, user["id"], results)
+            log.info("scrobbled for %s: %s - %s -> %s", user["username"],
+                     info["artist"], info["title"], results)
 
 
 async def _main():
@@ -283,6 +309,7 @@ async def _main():
         print(parse_track(await Shazam().recognize(data)) or "no match")
         return
     db.init()
+    accounts.ensure_first_user()
     listener = Listener()
     listener.start()
     await listener._task

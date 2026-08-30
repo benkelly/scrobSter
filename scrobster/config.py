@@ -73,7 +73,16 @@ RESCROBBLE_MINUTES = int(os.environ.get("RESCROBBLE_MINUTES", "30"))
 NOW_PLAYING_STOP_SECONDS = int(os.environ.get("NOW_PLAYING_STOP_SECONDS", "180"))
 DB_PATH = os.environ.get("DB_PATH", "scrobster.db")
 PORT = int(os.environ.get("PORT", "8000"))
-API_TOKEN = os.environ.get("API_TOKEN")  # unset = no auth (LAN default)
+# Legacy shared token. It still works, as an admin key, so an existing Home
+# Assistant REST sensor keeps reading the API after accounts were introduced.
+API_TOKEN = os.environ.get("API_TOKEN")
+ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
+# Home Assistant authenticates the user before ingress, and its documentation
+# says an add-on must not ask again. Requests from the ingress address are
+# therefore treated as the owner.
+TRUST_INGRESS = os.environ.get("TRUST_INGRESS", "1").lower() not in ("0", "false", "no")
+INGRESS_IP = os.environ.get("INGRESS_IP", "172.30.32.2")
 LISTEN_ON_START = os.environ.get("LISTEN_ON_START", "1").lower() not in ("0", "false", "no")
 
 LASTFM_API_KEY = os.environ.get("LASTFM_API_KEY")
