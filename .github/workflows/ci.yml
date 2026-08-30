@@ -58,13 +58,20 @@ jobs:
           sudo mkdir -p /tmp/hadata
           sudo chown root:root /tmp/hadata
           docker run -d --name smoke -p 8000:8000 -e LISTEN_ON_START=0 \
-            -v /tmp/hadata:/data scrobster:ci
+            -e ADMIN_PASSWORD=smoke-test-password -v /tmp/hadata:/data scrobster:ci
           for _ in $(seq 1 30); do
             curl -sf http://localhost:8000/ >/dev/null && break
             sleep 2
           done
           curl -sf http://localhost:8000/ >/dev/null
-          curl -sf http://localhost:8000/api/status | grep -q '"listening":false'
+          # The API must refuse an anonymous caller.
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/api/status)
+          test "$code" = "401" || { echo "expected 401, got $code"; exit 1; }
+          # And accept the account made on the first start.
+          curl -sf -c /tmp/jar -X POST http://localhost:8000/api/login \
+            -H 'content-type: application/json' \
+            -d '{"username":"admin","password":"smoke-test-password"}' >/dev/null
+          curl -sf -b /tmp/jar http://localhost:8000/api/status | grep -q '"listening":false'
           docker exec smoke ffmpeg -version >/dev/null
           # The database must exist, or the add-on cannot start.
           sudo test -f /tmp/hadata/scrobster.db
