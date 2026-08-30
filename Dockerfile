@@ -1,7 +1,10 @@
 FROM python:3.12-slim
 
+# libasound2-plugins provides libasound_module_pcm_pulse.so. Home Assistant
+# mounts an /etc/asound.conf that routes ALSA to PulseAudio, and ALSA cannot
+# load that route without this plugin.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends ffmpeg libasound2-plugins \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -9,10 +12,11 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY scrobster ./scrobster
 
+# Do not set AUDIO_BACKEND or AUDIO_DEVICE here. A real environment variable
+# outranks /data/options.json, so setting them would silently ignore the Home
+# Assistant add-on options. The defaults in config.py already give alsa on Linux.
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    AUDIO_BACKEND=alsa \
-    AUDIO_DEVICE=default \
     DB_PATH=/data/scrobster.db
 
 # Runs as root by default. Home Assistant bind-mounts /data owned by root, and a

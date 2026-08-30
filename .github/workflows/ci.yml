@@ -68,6 +68,14 @@ jobs:
           docker exec smoke ffmpeg -version >/dev/null
           # The database must exist, or the add-on cannot start.
           sudo test -f /tmp/hadata/scrobster.db
+          # The image must not pin the audio settings. A real environment
+          # variable outranks /data/options.json, so pinning them here would
+          # silently ignore the Home Assistant add-on options.
+          ! docker run --rm scrobster:ci env | grep -qE '^(AUDIO_BACKEND|AUDIO_DEVICE)='
+          # PulseAudio input, and the ALSA to PulseAudio plugin, must both exist.
+          docker run --rm scrobster:ci ffmpeg -hide_banner -devices 2>&1 | grep -q pulse
+          docker run --rm scrobster:ci sh -c \
+            'ls /usr/lib/*/alsa-lib/libasound_module_pcm_pulse.so' >/dev/null
           docker rm -f smoke
 
       - name: Log in to GitHub Packages
