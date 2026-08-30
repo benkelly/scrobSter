@@ -52,7 +52,13 @@ jobs:
 
       - name: Smoke test the image
         run: |
-          docker run -d --name smoke -p 8000:8000 -e LISTEN_ON_START=0 scrobster:ci
+          # A root-owned bind mount is what Home Assistant gives an add-on for
+          # /data. A named volume would hide the problem, because it inherits
+          # the ownership from the image.
+          sudo mkdir -p /tmp/hadata
+          sudo chown root:root /tmp/hadata
+          docker run -d --name smoke -p 8000:8000 -e LISTEN_ON_START=0 \
+            -v /tmp/hadata:/data scrobster:ci
           for _ in $(seq 1 30); do
             curl -sf http://localhost:8000/ >/dev/null && break
             sleep 2
@@ -60,7 +66,8 @@ jobs:
           curl -sf http://localhost:8000/ >/dev/null
           curl -sf http://localhost:8000/api/status | grep -q '"listening":false'
           docker exec smoke ffmpeg -version >/dev/null
-          test "$(docker exec smoke id -u)" = "1000"
+          # The database must exist, or the add-on cannot start.
+          sudo test -f /tmp/hadata/scrobster.db
           docker rm -f smoke
 
       - name: Log in to GitHub Packages

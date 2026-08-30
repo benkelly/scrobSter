@@ -1,5 +1,7 @@
 """Scrobble history. stdlib sqlite3, one table, connection per call."""
 import json
+import os
+import pathlib
 import sqlite3
 
 from . import config
@@ -12,6 +14,24 @@ def _conn():
 
 
 def init():
+    # sqlite reports only "unable to open database file" for a missing directory
+    # and for one it may not write. Say which, because the usual cause is a
+    # container volume owned by another user.
+    folder = pathlib.Path(config.DB_PATH).parent
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise RuntimeError(f"cannot create the folder {folder} for DB_PATH="
+                           f"{config.DB_PATH}: {e}") from e
+    try:
+        _conn().close()
+    except sqlite3.OperationalError as e:
+        uid = os.geteuid() if hasattr(os, "geteuid") else "unknown"
+        raise RuntimeError(
+            f"cannot open the database at {config.DB_PATH}: {e}. The folder"
+            f" {folder} must be writable by the user running scrobSter,"
+            f" which is uid {uid}."
+        ) from e
     with _conn() as c:
         c.execute(
             """CREATE TABLE IF NOT EXISTS matches(

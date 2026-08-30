@@ -15,13 +15,16 @@ ENV PYTHONUNBUFFERED=1 \
     AUDIO_DEVICE=default \
     DB_PATH=/data/scrobster.db
 
-# Run unprivileged. Reading a sound card also needs the host audio group, which
-# `docker run --group-add audio` supplies.
+# Runs as root by default. Home Assistant bind-mounts /data owned by root, and a
+# bind mount keeps the host ownership, so an unprivileged user cannot create the
+# database there. The add-on audio socket has the same problem.
+# For an unprivileged standalone container, use a named volume and pass
+# `--user 1000:1000 --group-add audio`. The scrobster user below owns /data, so
+# a fresh named volume inherits an ownership that user can write.
 RUN useradd --create-home --uid 1000 scrobster \
     && mkdir -p /data \
     && chown scrobster:scrobster /data
 VOLUME /data
-USER scrobster
 EXPOSE 8000
 
 # `/` needs no token, unlike /api/*, so this works when API_TOKEN is set.
