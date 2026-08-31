@@ -340,12 +340,21 @@ async function loadUsers() {
     <td>${esc(u.username)}</td>
     <td class="muted">${u.is_admin ? "administrator" : "user"}</td>
     <td class="muted">${u.room_mic ? "yes" : "no"}</td>
-    <td>${u.id === me.id ? "" :
-      `<button class="danger" data-del="${u.id}">Remove</button>`}</td></tr>`).join("");
+    <td>${u.id === me.id ? "" : `<div class="row">
+      <button class="ghost" data-pw="${u.id}">Set password</button>
+      <button class="danger" data-del="${u.id}">Remove</button></div>`}</td>
+    </tr>`).join("");
   $$("[data-del]").forEach(b => b.onclick = async () => {
     if (!confirm("Remove this account and its history?")) return;
     await api(`api/users/${b.dataset.del}`, {method: "DELETE"});
     loadUsers();
+  });
+  $$("[data-pw]").forEach(b => b.onclick = async () => {
+    const pw = prompt("New password for this account (at least 8 characters):");
+    if (!pw) return;
+    try { await send(`api/users/${b.dataset.pw}`, "PUT", {password: pw});
+          alert("Password changed."); }
+    catch (e) { alert(e.message); }
   });
 }
 

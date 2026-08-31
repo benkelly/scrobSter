@@ -31,6 +31,7 @@ listener = Listener()
 async def _lifespan(app):
     db.init()
     accounts.ensure_first_user()
+    accounts.sync_admin_password()
     if config.LISTEN_ON_START:
         listener.start()
     yield
@@ -278,6 +279,26 @@ async def add_user(body: dict, admin: dict = Depends(require_admin)):
     except Exception:
         raise HTTPException(409, "that user name is taken")
     return _public(user)
+
+
+@app.put("/api/users/{user_id}")
+async def edit_user(user_id: int, body: dict, admin: dict = Depends(require_admin)):
+    """An administrator manages other accounts, including a forgotten password.
+
+    Changing your own password still needs the current one, so a stolen session
+    cannot lock the owner out. Recover that with ADMIN_PASSWORD instead.
+    """
+    if user_id == admin["id"] and body.get("password"):
+        raise HTTPException(400, "use the password form to change your own password")
+    if accounts.get_user(user_id) is None:
+        raise HTTPException(404, "no such account")
+    try:
+        changed = accounts.update_user(
+            user_id, password=body.get("password"),
+            is_admin=body.get("is_admin"), room_mic=body.get("room_mic"))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return _public(changed)
 
 
 @app.delete("/api/users/{user_id}")

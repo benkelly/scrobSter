@@ -163,6 +163,25 @@ def check_migration():
             # A second user must not see somebody else's history.
             other = accounts.create_user("other", "password123")
             assert db.recent(other["id"]) == [], "history is per user"
+
+            # ADMIN_PASSWORD must apply to an account that already exists,
+            # otherwise setting it after the first start locks the owner out.
+            previous_name, previous_pw = config.ADMIN_USERNAME, config.ADMIN_PASSWORD
+            try:
+                config.ADMIN_USERNAME, config.ADMIN_PASSWORD = "owner", "chosen-password"
+                assert accounts.sync_admin_password() is True, "applies when different"
+                fresh = accounts.get_user(owner["id"])
+                assert accounts.verify_password("chosen-password", fresh["password_hash"])
+                assert accounts.sync_admin_password() is False, "no work when equal"
+                config.ADMIN_PASSWORD = "short"
+                assert accounts.sync_admin_password() is False, "too short is refused"
+                still = accounts.get_user(owner["id"])
+                assert accounts.verify_password("chosen-password", still["password_hash"]), \
+                    "a refused password must not clear the working one"
+                config.ADMIN_PASSWORD = None
+                assert accounts.sync_admin_password() is False, "unset changes nothing"
+            finally:
+                config.ADMIN_USERNAME, config.ADMIN_PASSWORD = previous_name, previous_pw
         finally:
             config.DB_PATH = previous
 

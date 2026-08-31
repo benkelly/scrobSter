@@ -225,6 +225,27 @@ def _credentials_from_env() -> dict:
     return found
 
 
+def sync_admin_password():
+    """Keep the owner's password equal to ADMIN_PASSWORD whenever it is set.
+
+    The account is created once, so without this, setting the variable after the
+    first start would appear to do nothing and lock you out. It also gives a way
+    back in after a forgotten password: set the variable and restart.
+    """
+    if not config.ADMIN_PASSWORD:
+        return False
+    user = get_user_by_name(config.ADMIN_USERNAME) or first_admin()
+    if user is None or verify_password(config.ADMIN_PASSWORD, user["password_hash"]):
+        return False
+    try:
+        update_user(user["id"], password=config.ADMIN_PASSWORD)
+    except ValueError as e:
+        log.warning("ADMIN_PASSWORD was not applied: %s", e)
+        return False
+    log.info("Applied ADMIN_PASSWORD to the account %r.", user["username"])
+    return True
+
+
 def ensure_first_user():
     """Create the owner account on first run, and keep an existing setup working.
 
