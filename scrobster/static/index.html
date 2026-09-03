@@ -33,6 +33,7 @@
       <div class="row">
         <button id="toggle" class="busy" aria-live="polite">&hellip;</button>
         <button id="mic" class="ghost">Use this device&rsquo;s mic</button>
+        <select id="micdev" class="hidden" aria-label="Which microphone" title="Which microphone"></select>
       </div>
       <div id="status" class="status" aria-live="polite"></div>
       <p id="adminnote" class="note"></p>
@@ -72,6 +73,34 @@
         <input type="checkbox" id="room_mic" aria-label="Scrobble what the room microphone hears">
         <span class="track"></span>
       </label>
+    </div>
+
+    <div id="audio-section" class="hidden">
+      <h2>Audio input</h2>
+      <div class="card">
+        <p class="muted small" style="margin-top:0">
+          What the server records. This is shared by everyone and takes effect at
+          the next capture.
+        </p>
+        <div class="row">
+          <label class="grow">Device
+            <select id="audio_device"></select></label>
+          <label class="grow hidden" id="audio_custom_wrap">ffmpeg device name
+            <input id="audio_custom" placeholder="hw:1,0 on Linux, :1 on macOS" spellcheck="false"></label>
+        </div>
+        <details class="small" style="margin-top:.5rem">
+          <summary class="muted">Advanced</summary>
+          <label style="margin-top:.5rem">ffmpeg input format
+            <input id="audio_backend" placeholder="alsa, pulse or avfoundation" spellcheck="false"></label>
+        </details>
+        <div class="row" style="margin-top:.75rem">
+          <button id="audio_apply">Use this device</button>
+          <button id="audio_test" class="ghost">Test level</button>
+          <button id="audio_reset" class="ghost hidden">Back to the environment setting</button>
+        </div>
+        <p id="audio_note" class="note" aria-live="polite"></p>
+        <p id="audio_source" class="note"></p>
+      </div>
     </div>
 
     <h2>Services</h2>
@@ -149,7 +178,15 @@ function ago(ts) {
 const when = ts => `<time datetime="${new Date(ts * 1000).toISOString()}"
   title="${esc(full(ts))}">${esc(ago(ts))}</time>`;
 
-let me = null, listening = false;
+let me = null, listening = false, profiles = {};
+
+// Where a track can be looked up. Last.fm spells a space as a plus.
+const lfm = s => encodeURIComponent(s).replace(/%20/g, "+");
+const shazamUrl = m => m.track_key ? `https://www.shazam.com/track/${encodeURIComponent(m.track_key)}` : null;
+const lastfmTrackUrl = m => `https://www.last.fm/music/${lfm(m.artist)}/_/${lfm(m.title)}`;
+const lastfmArtistUrl = m => `https://www.last.fm/music/${lfm(m.artist)}`;
+const ext = (url, text, cls = "") => url
+  ? `<a href="${esc(url)}" target="_blank" rel="noopener" class="${cls}">${text}</a>` : text;
 
 async function api(path, opts = {}) {
   const r = await fetch(path, {credentials: "same-origin", ...opts});
@@ -195,7 +232,7 @@ function showView(name) {
   if (!VIEWS.includes(name) || (name === "users" && !me?.is_admin)) name = "listen";
   $$('nav button').forEach(x => x.setAttribute("aria-selected", String(x.dataset.view === name)));
   VIEWS.forEach(v => $(`#view-${v}`).classList.toggle("hidden", v !== name));
-  if (name === "settings") loadServices();
+  if (name === "settings") { loadServices(); if (me?.is_admin) loadAudio(); }
   if (name === "users") loadUsers();
 }
 $$('nav button').forEach(b => b.onclick = () => {
@@ -218,7 +255,8 @@ let lastHistory = "";
 function paintStatus(st) {
   const parts = [];
   if (st.services.length) {
-    parts.push(`<span>sending to <span class="ok">${esc(st.services.join(", "))}</span></span>`);
+    parts.push(`<span>sending to ${st.services.map(name =>
+      ext(profiles[name], `<span class="ok">${esc(name)}</span>`, "plain")).join(", ")}</span>`);
   } else {
     parts.push(`<span class="warn">no service connected &middot;
       <a href="#settings" class="accent">connect one</a></span>`);
@@ -259,20 +297,27 @@ function paintNow(st) {
     ${m.art_url ? `<img src="${esc(m.art_url)}" alt="">`
                 : `<div class="art-empty" aria-hidden="true">&#9834;</div>`}
     <div class="grow">
-      <div class="title">${esc(m.title)}</div>
-      <div>${esc(m.artist)}${m.album ? `<span class="muted"> &middot; ${esc(m.album)}</span>` : ""}</div>
+      <div class="title">${ext(shazamUrl(m), esc(m.title), "plain")}</div>
+      <div>${ext(lastfmArtistUrl(m), esc(m.artist), "plain")}${m.album
+        ? `<span class="muted"> &middot; ${esc(m.album)}</span>` : ""}</div>
       <div class="meta row small">
         <span class="tag${live ? " live" : ""}">${live
           ? `<span class="dot live"></span>Playing now`
           : `Last heard ${esc(ago(m.ts))}`}</span>
         <span class="muted">${when(m.ts)} &middot; via ${esc(source)}</span>
+        <span class="muted links">${shazamUrl(m) ? ext(shazamUrl(m), "Shazam", "ext") + " " : ""}${
+          ext(lastfmTrackUrl(m), "Last.fm", "ext")}</span>
       </div>
     </div>`;
 }
 
-const badges = services => Object.entries(services).map(([s, v]) =>
-  `<span class="badge ${v === "ok" ? "ok" : "err"}" title="${esc(v === "ok" ? "sent" : v)}">${esc(s)}</span>`
-).join("");
+const badges = services => Object.entries(services).map(([s, v]) => {
+  const cls = `badge ${v === "ok" ? "ok" : "err"}`;
+  const title = v === "ok" ? (profiles[s] ? `sent, open your ${s} profile` : "sent") : v;
+  return profiles[s]
+    ? `<a class="${cls}" href="${esc(profiles[s])}" target="_blank" rel="noopener" title="${esc(title)}">${esc(s)}</a>`
+    : `<span class="${cls}" title="${esc(title)}">${esc(s)}</span>`;
+}).join("");
 
 function paintHistory(rows) {
   $("#empty").classList.toggle("hidden", rows.length > 0);
@@ -280,7 +325,7 @@ function paintHistory(rows) {
   const html = rows.map(r => `<tr>
     <td class="art">${r.art_url ? `<img class="thumb" src="${esc(r.art_url)}" alt="" loading="lazy">`
                                 : `<div class="thumb-empty"></div>`}</td>
-    <td><b>${esc(r.title)}</b><br>${esc(r.artist)}
+    <td><b>${ext(shazamUrl(r), esc(r.title), "plain")}</b><br>${ext(lastfmArtistUrl(r), esc(r.artist), "plain")}
         ${r.album ? `<br><span class="muted small album">${esc(r.album)}</span>` : ""}
         <div class="sent-inline">${badges(r.services)}</div></td>
     <td class="when muted">${when(r.ts)}${r.source === "browser"
@@ -299,6 +344,7 @@ async function refresh() {
     let st;
     try { st = await api("api/status"); } catch { return; }
     listening = st.listening;
+    profiles = st.profiles || {};
     $("#dot").className = "dot" + (listening ? " live" : "");
     $("#dot").title = listening ? "Listening to the room" : "Not listening";
     const t = $("#toggle");
@@ -328,6 +374,42 @@ const CLIP_MS = 12000, GAP_MS = 3000;
 let micOn = false, micStream = null;
 const micNote = (t, kind = "") => { $("#micnote").textContent = t; $("#micnote").className = "note " + kind; };
 
+// Voice processing strips the detail Shazam fingerprints. Ask for raw audio,
+// from the microphone chosen last time when there is one.
+async function openMic() {
+  const raw = {echoCancellation: false, noiseSuppression: false, autoGainControl: false};
+  let wanted = null;
+  try { wanted = localStorage.getItem("micDeviceId"); } catch {}
+  if (wanted) {
+    try { return await navigator.mediaDevices.getUserMedia({audio: {...raw, deviceId: {exact: wanted}}}); }
+    catch { /* unplugged since, fall back to the default */ }
+  }
+  return navigator.mediaDevices.getUserMedia({audio: raw});
+}
+
+// Labels only exist once the browser has permission, so this runs after openMic.
+async function listMics() {
+  const sel = $("#micdev");
+  let devices = [];
+  try { devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "audioinput" && d.label); }
+  catch { return; }
+  const current = micStream?.getAudioTracks()[0]?.getSettings().deviceId;
+  sel.innerHTML = devices.map(d =>
+    `<option value="${esc(d.deviceId)}" ${d.deviceId === current ? "selected" : ""}>${esc(d.label)}</option>`).join("");
+  sel.classList.toggle("hidden", devices.length < 2);
+}
+$("#micdev").onchange = () => {
+  try { localStorage.setItem("micDeviceId", $("#micdev").value); } catch {}
+  if (micStream) {
+    // The loop opens the new microphone before its next clip.
+    micStream.getTracks().forEach(t => t.stop());
+    micStream = null;
+  }
+};
+if (navigator.mediaDevices?.addEventListener) {
+  navigator.mediaDevices.addEventListener("devicechange", () => { if (micOn) listMics(); });
+}
+
 function recordClip(stream, ms) {
   return new Promise((resolve, reject) => {
     let rec; const chunks = [];
@@ -341,17 +423,17 @@ function recordClip(stream, ms) {
 }
 
 async function micLoop() {
-  try {
-    // Voice processing strips the detail Shazam fingerprints. Ask for raw audio.
-    micStream = await navigator.mediaDevices.getUserMedia({audio: {
-      echoCancellation: false, noiseSuppression: false, autoGainControl: false}});
-  } catch (e) {
-    micOn = false; paintMic(); micNote("Microphone blocked: " + e.message, "err"); return;
-  }
   while (micOn) {
     try {
-      const clip = await recordClip(micStream, CLIP_MS);
+      if (!micStream) { micStream = await openMic(); await listMics(); }
+    } catch (e) {
+      micOn = false; paintMic(); micNote("Microphone blocked: " + e.message, "err"); return;
+    }
+    const stream = micStream;
+    try {
+      const clip = await recordClip(stream, CLIP_MS);
       if (!micOn) break;
+      if (stream !== micStream) continue;  // the microphone changed mid-clip
       micNote("Identifying…");
       const r = await fetch("api/match", {method: "POST", credentials: "same-origin",
         headers: {"content-type": "application/octet-stream"}, body: clip});
@@ -364,8 +446,9 @@ async function micLoop() {
     } catch (e) { micNote("Error: " + e.message, "err"); }
     if (micOn) await new Promise(r => setTimeout(r, GAP_MS));
   }
-  micStream.getTracks().forEach(t => t.stop());
+  micStream?.getTracks().forEach(t => t.stop());
   micStream = null;
+  $("#micdev").classList.add("hidden");
 }
 
 function paintMic() {
@@ -390,14 +473,14 @@ $("#mic").onclick = () => {
 const FIELDS = {
   listenbrainz: [["token", "User token", "password"], ["url", "Server URL (optional)", "url"]],
   maloja: [["url", "Server URL", "url"], ["key", "API key", "password"]],
-  librefm: [["username", "User name", "text"], ["password_hash", "Password md5 hash", "password"]],
+  librefm: [["username", "User name", "text"], ["password", "Password", "password"]],
 };
 const TITLES = {lastfm: "Last.fm", librefm: "Libre.fm",
                 listenbrainz: "ListenBrainz", maloja: "Maloja"};
 const HINTS = {
   listenbrainz: `Find your token at listenbrainz.org/settings.`,
   maloja: `The URL of your Maloja server, and one of its API keys.`,
-  librefm: `The md5 hash of your password, never the password itself.`,
+  librefm: `The password is hashed before it is stored. scrobSter keeps only the hash, which is all Libre.fm needs.`,
 };
 
 function fieldHtml(name, info, [k, label, type]) {
@@ -421,7 +504,8 @@ async function loadServices() {
   $("#services").innerHTML = Object.keys(TITLES).map(name => {
     const info = s[name];
     const state = info.connected
-      ? `<span class="badge ok">connected${info.username ? " as " + esc(info.username) : ""}</span>`
+      ? `<span class="badge ok">connected${info.username ? " as " + ext(info.profile_url, esc(info.username), "plain") : ""}</span>`
+        + (info.profile_url ? ` ${ext(info.profile_url, "profile", "ext small muted")}` : "")
       : `<span class="badge muted">not connected</span>`;
     if (name === "lastfm") {
       return `<div class="service"><div class="between">
@@ -478,6 +562,82 @@ async function loadServices() {
   const start = $('[data-lastfm="start"]');
   if (start) start.onclick = lastfmConnect;
 }
+
+// --- the server's audio input, for an administrator ---
+const OTHER = "__other__";
+let audioState = null;
+
+function audioChoice() {
+  const sel = $("#audio_device");
+  return sel.value === OTHER ? $("#audio_custom").value.trim() : sel.value;
+}
+
+function paintAudio(a) {
+  audioState = a;
+  const sel = $("#audio_device");
+  const known = a.devices.some(d => d.device === a.device);
+  sel.innerHTML = a.devices.map(d =>
+    `<option value="${esc(d.device)}" ${d.device === a.device ? "selected" : ""}>${esc(d.label)} (${esc(d.device)})</option>`).join("")
+    + `<option value="${OTHER}" ${known ? "" : "selected"}>${a.devices.length ? "Other…" : "Type a device name"}</option>`;
+  $("#audio_custom").value = known ? "" : a.device;
+  $("#audio_custom_wrap").classList.toggle("hidden", known);
+  $("#audio_backend").value = a.backend;
+  $("#audio_reset").classList.toggle("hidden", !a.saved);
+  $("#audio_source").innerHTML = a.saved
+    ? `Chosen here. The environment says <code>AUDIO_DEVICE=${esc(a.env_device)}</code>, which is ignored while this is set.`
+    : `From the environment: <code>AUDIO_BACKEND=${esc(a.backend)}</code> <code>AUDIO_DEVICE=${esc(a.device)}</code>.`
+      + (a.devices.length ? "" : " ffmpeg could not list devices for this format, so type the name.");
+}
+
+async function loadAudio() {
+  $("#audio-section").classList.remove("hidden");
+  try { paintAudio(await api("api/audio")); }
+  catch (e) { $("#audio_source").innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+}
+
+$("#audio_device").onchange = () => {
+  const other = $("#audio_device").value === OTHER;
+  $("#audio_custom_wrap").classList.toggle("hidden", !other);
+  if (other) $("#audio_custom").focus();
+  $("#audio_note").textContent = "";
+};
+
+$("#audio_apply").onclick = () => busy($("#audio_apply"), async () => {
+  const device = audioChoice();
+  if (!device) { $("#audio_note").className = "note err"; $("#audio_note").textContent = "Choose a device first."; return; }
+  const backend = $("#audio_backend").value.trim();
+  try {
+    const a = await send("api/audio", "PUT", {device, backend: backend !== audioState?.backend ? backend : ""});
+    paintAudio({...a, devices: audioState?.devices || []});
+    $("#audio_note").className = "note ok";
+    $("#audio_note").textContent = `Recording from ${device} from the next capture on.`;
+    toast("Audio input changed", "ok");
+    refresh();
+  } catch (e) { $("#audio_note").className = "note err"; $("#audio_note").textContent = e.message; }
+});
+
+$("#audio_test").onclick = () => busy($("#audio_test"), async () => {
+  const note = $("#audio_note");
+  note.className = "note"; note.textContent = "Recording three seconds…";
+  try {
+    const r = await send("api/audio/test", "POST",
+                         {device: audioChoice(), backend: $("#audio_backend").value.trim()});
+    note.className = "note " + (r.silent ? "err" : "ok");
+    note.textContent = r.silent
+      ? `Peak ${r.level_db} dBFS: that device is silent. Play something, or pick another.`
+      : `Peak ${r.level_db} dBFS: it hears sound.` + (r.level_db < -40 ? " Quiet, though. Move it closer or raise the volume." : "");
+  } catch (e) { note.className = "note err"; note.textContent = e.message; }
+});
+
+$("#audio_reset").onclick = () => busy($("#audio_reset"), async () => {
+  try {
+    const a = await api("api/audio", {method: "DELETE"});
+    paintAudio({...a, devices: audioState?.devices || []});
+    $("#audio_note").textContent = "";
+    toast("Back to the environment setting", "ok");
+    refresh();
+  } catch (e) { toast(e.message, "err"); }
+});
 
 async function lastfmConnect() {
   const step = $("#lastfm-step");

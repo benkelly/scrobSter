@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import logging
 import pathlib
+import re
 import secrets
 
 import pylast
@@ -17,7 +18,8 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from . import accounts, config, db, scrobble
-from .listener import Listener, decode_to_wav, peak_dbfs
+from .listener import (SILENT_DBFS, Listener, decode_to_wav, list_devices, peak_dbfs,
+                       probe_level)
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 COOKIE = "scrobster_session"
@@ -32,6 +34,8 @@ async def _lifespan(app):
     db.init()
     accounts.ensure_first_user()
     accounts.sync_admin_password()
+    # A device chosen in Settings outranks the environment, see /api/audio.
+    config.set_audio(db.get_setting("audio_backend"), db.get_setting("audio_device"))
     if config.LISTEN_ON_START:
         listener.start()
     yield
@@ -147,6 +151,7 @@ async def services(user: dict = Depends(require_user)):
     """What is connected. Secrets are never sent back, only whether they exist."""
     credentials = accounts.get_credentials(user["id"])
     enabled = scrobble.enabled_services(credentials)
+    profiles = scrobble.profile_urls(credentials)
     out = {}
     for name in accounts.SERVICES:
         data = credentials.get(name) or {}
@@ -154,6 +159,7 @@ async def services(user: dict = Depends(require_user)):
             "connected": name in enabled,
             "username": data.get("username"),
             "url": data.get("url"),
+            "profile_url": profiles.get(name),
             "has_secret": bool(data.get("token") or data.get("key")
                                or data.get("session_key") or data.get("password_hash")),
         }
@@ -167,7 +173,19 @@ async def set_service(service: str, body: dict, user: dict = Depends(require_use
     """Set or update one service. Fields left out or empty keep their saved value,
     so the settings form can change a URL without asking for the secret again."""
     existing = accounts.get_credentials(user["id"]).get(service) or {}
-    data = {**existing, **{k: v for k, v in body.items() if v not in ("", None)}}
+    data = accounts.merge_credential(existing, body)
+    if service == "listenbrainz" and data.get("token"):
+        # Ask the server whose token it is. That both checks the token and gives
+        # the user name for the profile link.
+        try:
+            username = await scrobble.listenbrainz_username(data.get("url"), data["token"])
+        except Exception as e:
+            log.warning("could not check the ListenBrainz token: %s", e)
+            username = existing.get("username") if data["token"] == existing.get("token") else None
+        else:
+            if username is None:
+                raise HTTPException(400, "ListenBrainz did not accept that token")
+        data["username"] = username
     try:
         accounts.set_credential(user["id"], service, data)
     except ValueError as e:
@@ -216,6 +234,7 @@ async def lastfm_finish(body: dict, user: dict = Depends(require_user)):
 
 @app.get("/api/status")
 async def status(user: dict = Depends(require_user)):
+    credentials = accounts.get_credentials(user["id"])
     return {
         "listening": listener.listening,
         "started_at": listener.started_at,
@@ -224,10 +243,12 @@ async def status(user: dict = Depends(require_user)):
         "level_db": listener.last_level_db,
         "attempts": listener.attempts,
         "last_attempt": listener.last_attempt,
-        "services": scrobble.enabled_services(accounts.get_credentials(user["id"])),
+        "services": scrobble.enabled_services(credentials),
+        "profiles": scrobble.profile_urls(credentials),
         "interval": config.MATCH_INTERVAL,
         "stop_seconds": config.NOW_PLAYING_STOP_SECONDS,
         "room_mic": bool(user["room_mic"]),
+        "audio": {"backend": config.AUDIO_BACKEND, "device": config.AUDIO_DEVICE},
     }
 
 
@@ -263,6 +284,66 @@ async def match(request: Request, user: dict = Depends(require_user)):
         raise HTTPException(415, str(e))
     return {"match": await listener.match_bytes(wav, source="browser", users=[user]),
             "level_db": peak_dbfs(wav)}
+
+
+# --- the audio input, for an administrator -----------------------------------
+
+def _audio_state() -> dict:
+    saved = db.get_setting("audio_device") or db.get_setting("audio_backend")
+    return {"backend": config.AUDIO_BACKEND, "device": config.AUDIO_DEVICE,
+            "env_backend": config.ENV_AUDIO_BACKEND, "env_device": config.ENV_AUDIO_DEVICE,
+            "saved": bool(saved), "listening": listener.listening}
+
+
+@app.get("/api/audio")
+async def audio(admin: dict = Depends(require_admin)):
+    """The current capture device, and the ones ffmpeg can see."""
+    return {**_audio_state(), "devices": await list_devices(config.AUDIO_BACKEND)}
+
+
+@app.put("/api/audio")
+async def set_audio(body: dict, admin: dict = Depends(require_admin)):
+    """Choose the capture device. It is kept in the database and outranks the
+    environment, and the next capture already uses it."""
+    device = str(body.get("device") or "").strip()
+    backend = str(body.get("backend") or "").strip() or None
+    if not device:
+        raise HTTPException(400, "choose a device")
+    if backend and not re.fullmatch(r"[a-z0-9_]+", backend):
+        raise HTTPException(400, "that is not an ffmpeg input format")
+    db.set_setting("audio_device", device)
+    if backend:
+        db.set_setting("audio_backend", backend)
+    config.set_audio(backend, device)
+    listener.reset_input()
+    log.info("audio input changed by %s: %s %s", admin["username"],
+             config.AUDIO_BACKEND, config.AUDIO_DEVICE)
+    return _audio_state()
+
+
+@app.delete("/api/audio")
+async def reset_audio(admin: dict = Depends(require_admin)):
+    """Forget the choice made here and go back to the environment."""
+    db.set_setting("audio_device", None)
+    db.set_setting("audio_backend", None)
+    config.set_audio(config.ENV_AUDIO_BACKEND, config.ENV_AUDIO_DEVICE)
+    listener.reset_input()
+    return _audio_state()
+
+
+@app.post("/api/audio/test")
+async def test_audio(body: dict, admin: dict = Depends(require_admin)):
+    """Record three seconds from a device and report the peak, so a silent
+    device is found before it is chosen."""
+    device = str(body.get("device") or config.AUDIO_DEVICE).strip()
+    backend = str(body.get("backend") or config.AUDIO_BACKEND).strip()
+    try:
+        level = await probe_level(backend, device)
+    except Exception as e:
+        hint = (" The listener may be holding the device: stop listening and try again."
+                if listener.listening else "")
+        raise HTTPException(400, f"{e}{hint}")
+    return {"level_db": level, "silent": level < SILENT_DBFS}
 
 
 # --- users, for an administrator ---------------------------------------------

@@ -48,6 +48,44 @@ def enabled_services(credentials: dict) -> list[str]:
     return found
 
 
+def profile_urls(credentials: dict) -> dict:
+    """Where each connected service shows this user's listens."""
+    out = {}
+    for service in enabled_services(credentials):
+        data = credentials[service]
+        username = data.get("username")
+        if service == "lastfm" and username:
+            out[service] = f"https://www.last.fm/user/{username}"
+        elif service == "librefm" and username:
+            out[service] = f"https://libre.fm/user/{username}"
+        elif service == "listenbrainz" and username:
+            base = (data.get("url") or LISTENBRAINZ_DEFAULT_URL).rstrip("/")
+            # The API and the website share a host, except for the official
+            # instance, where the API sits on its own subdomain.
+            site = base.replace("://api.listenbrainz.org", "://listenbrainz.org")
+            out[service] = f"{site}/user/{username}"
+        elif service == "maloja" and data.get("url"):
+            out[service] = data["url"].rstrip("/")
+    return out
+
+
+async def listenbrainz_username(url, token) -> str | None:
+    """Ask a ListenBrainz server whose token this is.
+
+    Returns the user name, or None when the server says the token is invalid.
+    A network failure raises, so the caller can decide whether to save anyway.
+    """
+    base = (url or LISTENBRAINZ_DEFAULT_URL).rstrip("/")
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
+        async with s.get(f"{base}/1/validate-token",
+                         headers={"Authorization": f"Token {token}"}) as r:
+            r.raise_for_status()
+            body = await r.json()
+    if not body.get("valid"):
+        return None
+    return body.get("user_name")
+
+
 def _pylast_network(service, data):
     key = (service, data.get("session_key") or data.get("username"))
     if key not in _networks:

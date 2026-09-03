@@ -98,7 +98,7 @@ A service is enabled when all of its variables are set.
 | Variable | Default | Purpose |
 |---|---|---|
 | `AUDIO_BACKEND` | `avfoundation` (macOS) / `alsa` (Linux) | ffmpeg input format |
-| `AUDIO_DEVICE` | `:0` (macOS) / `default` (Linux) | ffmpeg input device |
+| `AUDIO_DEVICE` | `:0` (macOS) / `default` (Linux) | ffmpeg input device. An administrator can pick another under Settings, and that choice outranks this |
 | `CHUNK_SECONDS` | `12` | recorded seconds per match attempt; values above 14 are capped |
 | `MATCH_INTERVAL` | `15` | minimum seconds per cycle; increase if rate-limited |
 | `RESCROBBLE_MINUTES` | `30` | fallback cooldown, used only when a match has no offset |
@@ -121,7 +121,7 @@ Settings.
 | `LISTENBRAINZ_TOKEN`, `LISTENBRAINZ_URL` | ListenBrainz |
 | `LASTFM_SESSION_KEY`, `LASTFM_USERNAME` | Last.fm, or authorize in the browser instead |
 | `LASTFM_PASSWORD_HASH` or `LASTFM_PASSWORD` | Last.fm without the browser step |
-| `LIBREFM_USERNAME` + `LIBREFM_PASSWORD_HASH` | Libre.fm |
+| `LIBREFM_USERNAME` + `LIBREFM_PASSWORD` or `LIBREFM_PASSWORD_HASH` | Libre.fm. A password is hashed on the first start and only the hash is kept |
 | `MALOJA_URL`, `MALOJA_KEY` | Maloja |
 
 ## Connect Last.fm
@@ -138,6 +138,12 @@ Copy the session key into `.env`. scrobSter never stores your password. You can
 revoke the key in your Last.fm account settings.
 
 ## Find your audio device
+
+The easy way: sign in as an administrator, open Settings, and use **Audio
+input**. It lists the devices ffmpeg can see, and **Test level** records three
+seconds from the one you pick and reports the peak, so a silent device is
+caught before you choose it. The choice is saved and outranks `AUDIO_DEVICE`.
+The steps below do the same by hand.
 
 Step 1. List the devices.
 
@@ -210,7 +216,9 @@ device with ffmpeg. It runs headless, needs no browser, and survives a closed
 tab. Use this for an always-on machine.
 
 **Browser microphone (optional).** Open the page and select *use this device's
-mic*. The browser records 12-second clips and posts them to `POST /api/match`.
+mic*. Once the browser has permission, a menu next to the button lets you pick
+which microphone, and the page remembers it. The browser records 12-second
+clips and posts them to `POST /api/match`.
 The server identifies and scrobbles them through the same path, so both inputs
 share one history and one duplicate filter. Use this for a phone or a laptop in
 another room.
@@ -244,12 +252,14 @@ through Home Assistant ingress.
 | Endpoint | Purpose |
 |---|---|
 | `POST /api/login` `{username, password}` | sign in, sets a session cookie |
-| `GET /api/status` | listening state, last match, input level (`level_db`) |
+| `GET /api/status` | listening state, last match, input level (`level_db`), profile links |
 | `POST /api/listen` `{"on": true}` | start or stop the shared microphone. Administrator only |
 | `POST /api/match` (raw audio body) | identify one clip and scrobble it for the caller |
 | `GET /api/recent?limit=50` | that user's scrobble history |
 | `GET /api/me`, `PUT /api/me` | account details, and the room microphone choice |
 | `GET/PUT/DELETE /api/services/{name}` | that user's service credentials |
+| `GET/PUT/DELETE /api/audio` | the capture device, with the ones ffmpeg can see. Administrator only |
+| `POST /api/audio/test` `{device}` | record three seconds and report the peak level. Administrator only |
 | `GET/POST/DELETE /api/users` | accounts. Administrator only |
 
 Home Assistant REST sensor. Copy the token from Settings:

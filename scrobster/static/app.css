@@ -45,6 +45,16 @@ p { margin: .5rem 0; }
 .warn { color: var(--warn); }
 .nowrap { white-space: nowrap; }
 
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+a.plain { color: inherit; }
+a.plain:hover { color: var(--accent); }
+a.ext::after { content: " \2197"; font-size: .8em; opacity: .7; }
+a.badge { text-decoration: none; }
+a.badge:hover { filter: brightness(1.15); }
+details summary { cursor: pointer; }
+details summary:hover { color: var(--text); }
+
 .brand { display: inline-flex; align-items: center; gap: .6rem; }
 .brand img { width: 28px; height: 28px; border-radius: 7px; }
 
@@ -64,6 +74,8 @@ input, select {
   transition: border-color .15s;
 }
 input::placeholder { color: var(--muted); opacity: .7; }
+select { cursor: pointer; }
+select#micdev { width: auto; max-width: 260px; margin-top: 0; padding: .45rem .6rem; }
 input:hover, select:hover { border-color: var(--line-strong); }
 input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
 input[type="checkbox"] { width: auto; accent-color: var(--accent); }

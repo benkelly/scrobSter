@@ -188,9 +188,35 @@ def get_credentials(user_id) -> dict:
     return out
 
 
+def normalise_credential(data: dict) -> dict:
+    """Replace a plain password with its md5, which is all the Audioscrobbler
+    protocol ever needs. The password itself is never written anywhere."""
+    data = {k: v for k, v in data.items() if v not in (None, "")}
+    plain = data.pop("password", None)
+    if plain and not data.get("password_hash"):
+        data["password_hash"] = hashlib.md5(str(plain).encode("utf-8")).hexdigest()
+    return data
+
+
+def merge_credential(existing: dict, update: dict) -> dict:
+    """Apply a form submission to a saved credential.
+
+    Blank fields keep their saved value, so a form can change a URL without
+    asking for the secret again. A new password replaces the saved hash, which
+    is the same secret in another form.
+    """
+    update = {k: v for k, v in update.items() if v not in (None, "")}
+    merged = dict(existing)
+    if update.get("password"):
+        merged.pop("password_hash", None)
+    merged.update(update)
+    return normalise_credential(merged)
+
+
 def set_credential(user_id, service, data: dict):
     if service not in SERVICES:
         raise ValueError(f"unknown service: {service}")
+    data = normalise_credential(data)
     with db._conn() as c:
         c.execute("INSERT INTO credentials(user_id, service, data) VALUES(?,?,?)"
                   " ON CONFLICT(user_id, service) DO UPDATE SET data=excluded.data",
