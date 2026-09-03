@@ -10,6 +10,7 @@ import io
 import logging
 import math
 import pathlib
+import re
 import sys
 import tempfile
 import time
@@ -128,7 +129,92 @@ def parse_track(result) -> dict | None:
     }
 
 
-async def capture_chunk() -> bytes:
+# --- finding the audio device -------------------------------------------------
+
+def parse_device_list(backend: str, text: str) -> list[dict]:
+    """Turn ffmpeg's device listing into [{"device": ..., "label": ...}].
+
+    avfoundation prints its list as a log, with a video section first:
+        [AVFoundation indev @ 0x...] AVFoundation audio devices:
+        [AVFoundation indev @ 0x...] [0] MacBook Pro Microphone
+    `ffmpeg -sources <backend>` (alsa, pulse, and others) prints one per line,
+    with a star on the default:
+        * default [Playback/recording through the PulseAudio sound server]
+          hw:CARD=PCH,DEV=0 [HDA Intel PCH, ALC3232 Analog]
+    """
+    found = []
+    if backend == "avfoundation":
+        in_audio = False
+        for line in text.splitlines():
+            msg = line.split("] ", 1)[-1].strip() if line.startswith("[") else line.strip()
+            if msg.endswith("audio devices:"):
+                in_audio = True
+                continue
+            if msg.endswith("devices:"):
+                in_audio = False
+                continue
+            if in_audio and msg.startswith("[") and "]" in msg:
+                index, _, name = msg[1:].partition("]")
+                if index.strip().isdigit():
+                    found.append({"device": f":{index.strip()}", "label": name.strip()})
+        return found
+    for line in text.splitlines():
+        m = re.match(r"^\s*(\*?)\s*(\S+)\s+\[(.*)\]\s*$", line)
+        if m and not line.lower().startswith("auto-detected"):
+            found.append({"device": m.group(2), "label": m.group(3).strip(),
+                          "default": m.group(1) == "*"})
+    return found
+
+
+def parse_proc_asound_pcm(text: str) -> list[dict]:
+    """Capture devices from /proc/asound/pcm, for a Linux box with no
+    `ffmpeg -sources` support and no alsa-utils. One line per PCM:
+        00-00: ALC3232 Analog : ALC3232 Analog : playback 1 : capture 1
+    """
+    found = []
+    for line in text.splitlines():
+        head, _, rest = line.partition(":")
+        if "capture" not in rest or "-" not in head:
+            continue
+        card, _, dev = head.strip().partition("-")
+        name = rest.split(":")[0].strip()
+        found.append({"device": f"hw:{int(card)},{int(dev)}", "label": name})
+    return found
+
+
+async def _run(*argv, timeout=10) -> str:
+    """Run a command and return whatever it printed on either stream."""
+    proc = await asyncio.create_subprocess_exec(
+        *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        return ""
+    return out.decode(errors="replace")
+
+
+async def list_devices(backend: str) -> list[dict]:
+    """Audio inputs ffmpeg can open with this backend. Empty when it cannot tell."""
+    try:
+        if backend == "avfoundation":
+            text = await _run("ffmpeg", "-hide_banner", "-f", "avfoundation",
+                              "-list_devices", "true", "-i", "")
+        else:
+            text = await _run("ffmpeg", "-hide_banner", "-sources", backend)
+    except FileNotFoundError:
+        return []
+    found = parse_device_list(backend, text)
+    if not found and backend == "alsa":
+        try:
+            found = parse_proc_asound_pcm(pathlib.Path("/proc/asound/pcm").read_text())
+        except OSError:
+            pass
+    return found
+
+
+async def capture_chunk(seconds=None, backend=None, device=None) -> bytes:
+    """Record one chunk. The arguments override the configured device, for a test."""
     # ponytail: one ffmpeg spawn per chunk; self-heals when the device drops.
     # Write a temp file, never a pipe: piped WAV gets 0xFFFFFFFF RIFF sizes because
     # ffmpeg cannot seek back to patch them, and the decoder then reads no samples.
@@ -136,8 +222,8 @@ async def capture_chunk() -> bytes:
         path = pathlib.Path(tmp) / "chunk.wav"
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-f", config.AUDIO_BACKEND, "-i", config.AUDIO_DEVICE,
-            "-t", str(config.CHUNK_SECONDS), "-ac", "1", "-ar", "16000",
+            "-f", backend or config.AUDIO_BACKEND, "-i", device or config.AUDIO_DEVICE,
+            "-t", str(seconds or config.CHUNK_SECONDS), "-ac", "1", "-ar", "16000",
             "-y", str(path),
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
         )
@@ -146,6 +232,12 @@ async def capture_chunk() -> bytes:
         if proc.returncode != 0 or not data:
             raise RuntimeError(f"ffmpeg capture failed: {err.decode(errors='replace')[-300:]}")
         return data
+
+
+async def probe_level(backend, device, seconds=3) -> float:
+    """Record a short clip from a device and report its peak, to check that the
+    device hears anything before committing to it."""
+    return peak_dbfs(await capture_chunk(seconds, backend, device))
 
 
 async def decode_to_wav(data: bytes) -> bytes:
@@ -188,6 +280,12 @@ class Listener:
         self.last_attempt = None
         self.attempts = 0
         self.started_at = None
+
+    def reset_input(self):
+        """Forget what the previous device reported, after the device changed."""
+        self.last_level_db = None
+        self.last_error = None
+        self._warned_silent = False
 
     @property
     def listening(self) -> bool:

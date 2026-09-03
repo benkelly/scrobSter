@@ -3,36 +3,47 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>scrobSter</title>
-<link rel="icon" href="data:,">
+<meta name="theme-color" content="#0f1216">
+<title>Sign in &middot; scrobSter</title>
+<link rel="icon" href="icon.png" type="image/png">
+<link rel="apple-touch-icon" href="icon.png">
 <link rel="stylesheet" href="app.css">
 </head>
 <body class="centred">
 <form id="form" class="card narrow">
-  <h1>scrob<span class="accent">S</span>ter</h1>
-  <p class="muted small">Sign in to see what the room is playing.</p>
+  <h1 class="brand"><img src="icon.png" alt=""><span>scrob<span class="accent">S</span>ter</span></h1>
+  <p class="muted small" style="margin:0">Sign in to see what the room is playing.</p>
   <label>User name
-    <input id="username" autocomplete="username" autofocus required>
+    <input id="username" autocomplete="username" autocapitalize="none" spellcheck="false" autofocus required>
   </label>
   <label>Password
     <input id="password" type="password" autocomplete="current-password" required>
   </label>
-  <button type="submit">Sign in</button>
-  <p id="error" class="err small"></p>
+  <button type="submit" id="submit">Sign in</button>
+  <p id="error" class="err small" role="alert" style="margin:0"></p>
 </form>
 <script>
 const $ = s => document.querySelector(s);
 $("#form").onsubmit = async e => {
   e.preventDefault();
-  $("#error").textContent = "";
-  const r = await fetch("api/login", {
-    method: "POST",
-    headers: {"content-type": "application/json"},
-    body: JSON.stringify({username: $("#username").value, password: $("#password").value}),
-  });
-  if (r.ok) { location.href = "."; return; }
-  const body = await r.json().catch(() => ({}));
-  $("#error").textContent = body.detail || `Sign in failed (${r.status})`;
+  const btn = $("#submit"), err = $("#error");
+  err.textContent = "";
+  btn.classList.add("busy"); btn.disabled = true;
+  try {
+    const r = await fetch("api/login", {
+      method: "POST",
+      headers: {"content-type": "application/json"},
+      body: JSON.stringify({username: $("#username").value, password: $("#password").value}),
+    });
+    if (r.ok) { location.href = "."; return; }
+    const body = await r.json().catch(() => ({}));
+    err.textContent = body.detail || `Sign in failed (${r.status})`;
+    $("#password").select();
+  } catch (e) {
+    err.textContent = "Could not reach scrobSter. Is it running?";
+  } finally {
+    btn.classList.remove("busy"); btn.disabled = false;
+  }
 };
 </script>
 </body>

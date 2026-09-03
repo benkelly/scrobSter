@@ -3,116 +3,190 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0f1216">
 <title>scrobSter</title>
-<link rel="icon" href="data:,">
+<link rel="icon" href="icon.png" type="image/png">
+<link rel="apple-touch-icon" href="icon.png">
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
 <div class="wrap">
   <div class="between">
-    <h1>scrob<span class="accent">S</span>ter <span id="dot" class="dot"></span></h1>
+    <h1 class="brand"><img src="icon.png" alt="">
+      <span>scrob<span class="accent">S</span>ter</span>
+      <span id="dot" class="dot" title="Not listening"></span></h1>
     <div class="row small">
       <span id="who" class="muted"></span>
       <button id="signout" class="ghost small">Sign out</button>
     </div>
   </div>
 
-  <nav role="tablist">
-    <button role="tab" data-view="listen" aria-selected="true">Listening</button>
-    <button role="tab" data-view="settings" aria-selected="false">Settings</button>
-    <button role="tab" data-view="users" aria-selected="false" id="tab-users" hidden>Users</button>
+  <nav role="tablist" aria-label="Sections">
+    <button role="tab" data-view="listen" aria-selected="true" aria-controls="view-listen">Listening</button>
+    <button role="tab" data-view="settings" aria-selected="false" aria-controls="view-settings">Settings</button>
+    <button role="tab" data-view="users" aria-selected="false" aria-controls="view-users" id="tab-users" hidden>Users</button>
   </nav>
 
   <!-- Listening ------------------------------------------------------------->
-  <section id="view-listen">
+  <section id="view-listen" role="tabpanel">
     <div class="card">
-      <div class="between">
-        <div class="row">
-          <button id="toggle">&hellip;</button>
-          <button id="mic" class="ghost">Use this device&rsquo;s mic</button>
-        </div>
-        <span id="level" class="muted small"></span>
+      <div class="row">
+        <button id="toggle" class="busy" aria-live="polite">&hellip;</button>
+        <button id="mic" class="ghost">Use this device&rsquo;s mic</button>
+        <select id="micdev" class="hidden" aria-label="Which microphone" title="Which microphone"></select>
       </div>
-      <p id="micnote" class="muted small"></p>
+      <div id="status" class="status" aria-live="polite"></div>
+      <p id="adminnote" class="note"></p>
+      <p id="micnote" class="note" aria-live="polite"></p>
+      <p id="lasterror" class="note err" aria-live="polite"></p>
     </div>
 
     <h2>Now</h2>
-    <div class="card" id="now"><span class="muted">Loading&hellip;</span></div>
+    <div class="card" id="now" aria-live="polite"><span class="muted">Loading&hellip;</span></div>
 
     <h2>Your scrobbles</h2>
-    <table>
-      <thead><tr><th></th><th>Track</th><th>Time</th><th>Sent to</th></tr></thead>
-      <tbody id="history"></tbody>
-    </table>
-    <p id="empty" class="muted small hidden">
-      Nothing yet. Connect a service under Settings, then play some music.
-    </p>
+    <div class="table-wrap">
+      <table id="historytable">
+        <thead><tr><th></th><th>Track</th><th>When</th><th class="sent">Sent to</th></tr></thead>
+        <tbody id="history"></tbody>
+      </table>
+    </div>
+    <div id="empty" class="empty hidden">
+      <b>Nothing scrobbled yet.</b><br>
+      <span class="small">Connect a service under
+        <a href="#settings" class="accent">Settings</a>, then play some music.</span>
+    </div>
   </section>
 
   <!-- Settings -------------------------------------------------------------->
-  <section id="view-settings" class="hidden">
+  <section id="view-settings" role="tabpanel" class="hidden">
     <h2>Room microphone</h2>
     <div class="card between">
-      <div>
+      <div class="grow">
         <div>Scrobble what the room microphone hears</div>
         <div class="muted small">
           The shared microphone cannot tell who is listening, so this is off
           until you turn it on.
         </div>
       </div>
-      <input type="checkbox" id="room_mic" style="width:auto">
+      <label class="switch" title="Room microphone">
+        <input type="checkbox" id="room_mic" aria-label="Scrobble what the room microphone hears">
+        <span class="track"></span>
+      </label>
+    </div>
+
+    <div id="audio-section" class="hidden">
+      <h2>Audio input</h2>
+      <div class="card">
+        <p class="muted small" style="margin-top:0">
+          What the server records. This is shared by everyone and takes effect at
+          the next capture.
+        </p>
+        <div class="row">
+          <label class="grow">Device
+            <select id="audio_device"></select></label>
+          <label class="grow hidden" id="audio_custom_wrap">ffmpeg device name
+            <input id="audio_custom" placeholder="hw:1,0 on Linux, :1 on macOS" spellcheck="false"></label>
+        </div>
+        <details class="small" style="margin-top:.5rem">
+          <summary class="muted">Advanced</summary>
+          <label style="margin-top:.5rem">ffmpeg input format
+            <input id="audio_backend" placeholder="alsa, pulse or avfoundation" spellcheck="false"></label>
+        </details>
+        <div class="row" style="margin-top:.75rem">
+          <button id="audio_apply">Use this device</button>
+          <button id="audio_test" class="ghost">Test level</button>
+          <button id="audio_reset" class="ghost hidden">Back to the environment setting</button>
+        </div>
+        <p id="audio_note" class="note" aria-live="polite"></p>
+        <p id="audio_source" class="note"></p>
+      </div>
     </div>
 
     <h2>Services</h2>
-    <div class="card" id="services"></div>
+    <div class="card" id="services"><span class="muted">Loading&hellip;</span></div>
 
     <h2>Your API token</h2>
     <div class="card">
-      <p class="muted small">
+      <p class="muted small" style="margin-top:0">
         For the Home Assistant sensor and scripts. Send it as
         <code>Authorization: Bearer &lt;token&gt;</code>.
       </p>
-      <p><code id="apitoken">&hellip;</code></p>
-      <button id="newtoken" class="ghost">Replace token</button>
+      <div class="token">
+        <code id="apitoken" class="masked" aria-label="API token">&hellip;</code>
+        <button id="showtoken" class="ghost small" aria-pressed="false">Show</button>
+        <button id="copytoken" class="ghost small">Copy</button>
+      </div>
+      <button id="newtoken" class="danger">Replace token</button>
+      <p class="note">Replacing the token signs out every script that uses the old one.</p>
     </div>
 
     <h2>Password</h2>
-    <form class="card narrow" id="pwform" style="width:100%">
-      <label>Current password<input id="pw_current" type="password" required></label>
-      <label>New password<input id="pw_new" type="password" minlength="8" required></label>
-      <button type="submit">Change password</button>
-      <span id="pwnote" class="small"></span>
+    <form class="card stack" id="pwform" autocomplete="on">
+      <label>Current password<input id="pw_current" type="password" autocomplete="current-password" required></label>
+      <label>New password<input id="pw_new" type="password" minlength="8" autocomplete="new-password"
+                                placeholder="At least 8 characters" required></label>
+      <div class="row"><button type="submit">Change password</button>
+        <span id="pwnote" class="small" aria-live="polite"></span></div>
     </form>
   </section>
 
   <!-- Users ----------------------------------------------------------------->
-  <section id="view-users" class="hidden">
+  <section id="view-users" role="tabpanel" class="hidden">
     <h2>Accounts</h2>
-    <table>
-      <thead><tr><th>User</th><th>Role</th><th>Room mic</th><th></th></tr></thead>
-      <tbody id="users"></tbody>
-    </table>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>User</th><th>Role</th><th>Room mic</th><th></th></tr></thead>
+        <tbody id="users"></tbody>
+      </table>
+    </div>
 
     <h2>Add someone</h2>
-    <form class="card narrow" id="userform" style="width:100%">
-      <label>User name<input id="new_user" required></label>
-      <label>Password<input id="new_pass" type="password" minlength="8" required></label>
-      <label class="row"><input type="checkbox" id="new_admin" style="width:auto">
-        <span>Administrator</span></label>
-      <button type="submit">Create account</button>
-      <span id="usernote" class="small"></span>
+    <form class="card stack" id="userform" autocomplete="off">
+      <label>User name<input id="new_user" autocomplete="off" required></label>
+      <label>Password<input id="new_pass" type="password" minlength="8" autocomplete="new-password"
+                            placeholder="At least 8 characters" required></label>
+      <label class="inline"><input type="checkbox" id="new_admin">
+        <span>Administrator <span class="muted small">(can start the room microphone and manage accounts)</span></span></label>
+      <div class="row"><button type="submit">Create account</button>
+        <span id="usernote" class="small" aria-live="polite"></span></div>
     </form>
   </section>
 </div>
+
+<div id="toasts" aria-live="polite" aria-atomic="false"></div>
 
 <script>
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? "").replace(/[&<>"]/g,
   c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const fmt = ts => new Date(ts * 1000).toLocaleString();
+const full = ts => new Date(ts * 1000).toLocaleString();
 
-let me = null, listening = false;
+// "3 min ago" for the list. The exact time sits in the title, for a hover.
+function ago(ts) {
+  const s = Math.max(0, Math.floor(Date.now() / 1000 - ts));
+  if (s < 45) return "just now";
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m} min ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} h ${m % 60} min ago`;
+  const d = Math.floor(h / 24);
+  if (d < 7) return `${d} d ago`;
+  return new Date(ts * 1000).toLocaleDateString();
+}
+const when = ts => `<time datetime="${new Date(ts * 1000).toISOString()}"
+  title="${esc(full(ts))}">${esc(ago(ts))}</time>`;
+
+let me = null, listening = false, profiles = {};
+
+// Where a track can be looked up. Last.fm spells a space as a plus.
+const lfm = s => encodeURIComponent(s).replace(/%20/g, "+");
+const shazamUrl = m => m.track_key ? `https://www.shazam.com/track/${encodeURIComponent(m.track_key)}` : null;
+const lastfmTrackUrl = m => `https://www.last.fm/music/${lfm(m.artist)}/_/${lfm(m.title)}`;
+const lastfmArtistUrl = m => `https://www.last.fm/music/${lfm(m.artist)}`;
+const ext = (url, text, cls = "") => url
+  ? `<a href="${esc(url)}" target="_blank" rel="noopener" class="${cls}">${text}</a>` : text;
 
 async function api(path, opts = {}) {
   const r = await fetch(path, {credentials: "same-origin", ...opts});
@@ -131,61 +205,210 @@ async function api(path, opts = {}) {
 const send = (path, method, body) => api(path, {
   method, headers: {"content-type": "application/json"}, body: JSON.stringify(body)});
 
-// --- tabs ---
-$$('nav button').forEach(b => b.onclick = () => {
-  $$('nav button').forEach(x => x.setAttribute("aria-selected", String(x === b)));
-  ["listen", "settings", "users"].forEach(v =>
-    $(`#view-${v}`).classList.toggle("hidden", v !== b.dataset.view));
-  if (b.dataset.view === "settings") loadServices();
-  if (b.dataset.view === "users") loadUsers();
-});
-
-// --- listening ---
-async function refresh() {
-  let st;
-  try { st = await api("api/status"); } catch { return; }
-  listening = st.listening;
-  $("#dot").className = "dot" + (listening ? " live" : "");
-  $("#toggle").textContent = listening ? "Stop listening" : "Start listening";
-  $("#toggle").disabled = !me?.is_admin;
-  $("#toggle").title = me?.is_admin ? "" : "Only an administrator can change this";
-  const lvl = st.level_db == null ? "" : `input ${st.level_db} dBFS`;
-  const silent = st.level_db != null && st.level_db < -80;
-  $("#level").innerHTML = (st.services.length
-      ? `sending to ${esc(st.services.join(", "))}` : `<span class="err">no service connected</span>`)
-    + (lvl ? ` &middot; ${esc(lvl)}` : "")
-    + (silent ? ` <span class="err">&#9888; silent, check the audio input</span>` : "");
-
-  const m = st.last_match;
-  const tries = st.attempts ? `${st.attempts} listens` : "starting\u2026";
-  $("#now").innerHTML = m
-    ? `${m.art_url ? `<img src="${esc(m.art_url)}" alt="">` : ""}
-       <div><b>${esc(m.title)}</b><br>${esc(m.artist)}
-       <br><span class="muted small">${esc(fmt(m.ts))} &middot; via ${esc(m.source || "server")}
-       &middot; ${esc(tries)}</span></div>`
-    : `<span class="muted">${esc(st.last_error || "No match yet \u2014 " + tries)}</span>`;
-
-  const rows = await api("api/recent?limit=50");
-  $("#empty").classList.toggle("hidden", rows.length > 0);
-  $("#history").innerHTML = rows.map(r => `<tr>
-    <td>${r.art_url ? `<img class="thumb" src="${esc(r.art_url)}" alt="">` : ""}</td>
-    <td><b>${esc(r.title)}</b><br>${esc(r.artist)}
-        ${r.album ? `<br><span class="muted small">${esc(r.album)}</span>` : ""}</td>
-    <td class="muted">${esc(fmt(r.ts))}</td>
-    <td>${Object.entries(r.services).map(([s, v]) =>
-        `<span class="badge ${v === "ok" ? "ok" : "err"}" title="${esc(v)}">${esc(s)}</span>`
-      ).join("")}</td></tr>`).join("");
+// --- small helpers ---
+function toast(text, kind = "") {
+  const t = document.createElement("div");
+  t.className = "toast " + kind;
+  t.textContent = text;
+  $("#toasts").appendChild(t);
+  setTimeout(() => { t.classList.add("leaving"); setTimeout(() => t.remove(), 300); }, 3500);
 }
 
-$("#toggle").onclick = async () => {
-  try { await send("api/listen", "POST", {on: !listening}); refresh(); }
-  catch (e) { alert(e.message); }
-};
+// Run an action with the button greyed out, so a double click cannot send twice.
+async function busy(btn, fn) {
+  if (btn.classList.contains("busy")) return;
+  btn.classList.add("busy"); btn.disabled = true;
+  try { return await fn(); }
+  finally { btn.classList.remove("busy"); btn.disabled = false; }
+}
+
+function setNote(el, text, kind = "") {
+  el.className = "small " + kind; el.textContent = text;
+}
+
+// --- tabs, kept in the URL hash so a reload or the back button lands on the same one ---
+const VIEWS = ["listen", "settings", "users"];
+function showView(name) {
+  if (!VIEWS.includes(name) || (name === "users" && !me?.is_admin)) name = "listen";
+  $$('nav button').forEach(x => x.setAttribute("aria-selected", String(x.dataset.view === name)));
+  VIEWS.forEach(v => $(`#view-${v}`).classList.toggle("hidden", v !== name));
+  if (name === "settings") { loadServices(); if (me?.is_admin) loadAudio(); }
+  if (name === "users") loadUsers();
+}
+$$('nav button').forEach(b => b.onclick = () => {
+  if (location.hash.slice(1) === b.dataset.view) showView(b.dataset.view);
+  else location.hash = b.dataset.view;
+});
+$("nav").addEventListener("keydown", e => {
+  if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+  const tabs = $$('nav button:not([hidden])');
+  const i = tabs.indexOf(document.activeElement);
+  if (i < 0) return;
+  const next = tabs[(i + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
+  next.focus(); next.click(); e.preventDefault();
+});
+window.addEventListener("hashchange", () => showView(location.hash.slice(1)));
+
+// --- listening ---
+let lastHistory = "";
+
+function paintStatus(st) {
+  const parts = [];
+  if (st.services.length) {
+    parts.push(`<span>sending to ${st.services.map(name =>
+      ext(profiles[name], `<span class="ok">${esc(name)}</span>`, "plain")).join(", ")}</span>`);
+  } else {
+    parts.push(`<span class="warn">no service connected &middot;
+      <a href="#settings" class="accent">connect one</a></span>`);
+  }
+  if (st.level_db != null) {
+    const silent = st.level_db < -80, quiet = st.level_db < -40;
+    // -60 dBFS is the quiet end of the bar, 0 dBFS is full.
+    const pct = Math.max(0, Math.min(100, (st.level_db + 60) / 60 * 100));
+    parts.push(`<span class="meter${silent ? " silent" : quiet ? " quiet" : ""}"
+        title="Peak level of the last capture">
+      <span class="bar"><span class="fill" style="width:${pct.toFixed(0)}%"></span></span>
+      <span>input ${esc(st.level_db)} dBFS</span></span>`);
+    if (silent) parts.push(`<span class="err">&#9888; silent, check the audio input</span>`);
+  }
+  if (st.attempts) {
+    const lastTry = st.last_attempt ? ` &middot; last ${esc(ago(st.last_attempt))}` : "";
+    parts.push(`<span title="Captures since the listener started">${st.attempts} listens${lastTry}</span>`);
+  }
+  $("#status").innerHTML = parts.join("");
+}
+
+function paintNow(st) {
+  const m = st.last_match;
+  const el = $("#now");
+  if (!m) {
+    let text;
+    if (st.last_error && listening) text = `<span class="err">${esc(st.last_error)}</span>`;
+    else if (!listening && !micOn) text = `<span class="muted">Not listening.</span>`;
+    else if (!st.attempts) text = `<span class="muted">Starting&hellip;</span>`;
+    else text = `<span class="muted">No match yet. Listening for music&hellip;</span>`;
+    el.innerHTML = `<div class="art-empty" aria-hidden="true">&#9834;</div><div>${text}</div>`;
+    return;
+  }
+  const stopAfter = st.stop_seconds || 180;
+  const live = (listening || micOn) && Date.now() / 1000 - m.ts < stopAfter;
+  const source = m.source === "browser" ? "this device" : "room microphone";
+  el.innerHTML = `
+    ${m.art_url ? `<img src="${esc(m.art_url)}" alt="">`
+                : `<div class="art-empty" aria-hidden="true">&#9834;</div>`}
+    <div class="grow">
+      <div class="title">${ext(shazamUrl(m), esc(m.title), "plain")}</div>
+      <div>${ext(lastfmArtistUrl(m), esc(m.artist), "plain")}${m.album
+        ? `<span class="muted"> &middot; ${esc(m.album)}</span>` : ""}</div>
+      <div class="meta row small">
+        <span class="tag${live ? " live" : ""}">${live
+          ? `<span class="dot live"></span>Playing now`
+          : `Last heard ${esc(ago(m.ts))}`}</span>
+        <span class="muted">${when(m.ts)} &middot; via ${esc(source)}</span>
+        <span class="muted links">${shazamUrl(m) ? ext(shazamUrl(m), "Shazam", "ext") + " " : ""}${
+          ext(lastfmTrackUrl(m), "Last.fm", "ext")}</span>
+      </div>
+    </div>`;
+}
+
+const badges = services => Object.entries(services).map(([s, v]) => {
+  const cls = `badge ${v === "ok" ? "ok" : "err"}`;
+  const title = v === "ok" ? (profiles[s] ? `sent, open your ${s} profile` : "sent") : v;
+  return profiles[s]
+    ? `<a class="${cls}" href="${esc(profiles[s])}" target="_blank" rel="noopener" title="${esc(title)}">${esc(s)}</a>`
+    : `<span class="${cls}" title="${esc(title)}">${esc(s)}</span>`;
+}).join("");
+
+function paintHistory(rows) {
+  $("#empty").classList.toggle("hidden", rows.length > 0);
+  $("#historytable").classList.toggle("hidden", rows.length === 0);
+  const html = rows.map(r => `<tr>
+    <td class="art">${r.art_url ? `<img class="thumb" src="${esc(r.art_url)}" alt="" loading="lazy">`
+                                : `<div class="thumb-empty"></div>`}</td>
+    <td><b>${ext(shazamUrl(r), esc(r.title), "plain")}</b><br>${ext(lastfmArtistUrl(r), esc(r.artist), "plain")}
+        ${r.album ? `<br><span class="muted small album">${esc(r.album)}</span>` : ""}
+        <div class="sent-inline">${badges(r.services)}</div></td>
+    <td class="when muted">${when(r.ts)}${r.source === "browser"
+        ? `<br><span class="small">via this device</span>` : ""}</td>
+    <td class="sent">${badges(r.services)}</td></tr>`).join("");
+  // Leave the DOM alone when nothing changed, so a text selection or an image
+  // does not flicker every five seconds.
+  if (html !== lastHistory) { $("#history").innerHTML = html; lastHistory = html; }
+}
+
+let refreshing = false;
+async function refresh() {
+  if (refreshing) return;
+  refreshing = true;
+  try {
+    let st;
+    try { st = await api("api/status"); } catch { return; }
+    listening = st.listening;
+    profiles = st.profiles || {};
+    $("#dot").className = "dot" + (listening ? " live" : "");
+    $("#dot").title = listening ? "Listening to the room" : "Not listening";
+    const t = $("#toggle");
+    t.classList.remove("busy");
+    t.textContent = listening ? "Stop listening" : "Start listening";
+    t.classList.toggle("stop", listening);
+    t.disabled = !me?.is_admin;
+    $("#adminnote").textContent = me?.is_admin
+      ? "" : "Only an administrator can start or stop the room microphone.";
+    $("#lasterror").textContent = (st.last_error && st.last_match) ? st.last_error : "";
+    paintStatus(st);
+    paintNow(st);
+    paintHistory(await api("api/recent?limit=50"));
+  } finally { refreshing = false; }
+}
+
+$("#toggle").onclick = () => busy($("#toggle"), async () => {
+  try {
+    const r = await send("api/listen", "POST", {on: !listening});
+    toast(r.listening ? "Listening to the room" : "Stopped listening", "ok");
+    await refresh();
+  } catch (e) { toast(e.message, "err"); }
+});
 
 // --- browser microphone ---
 const CLIP_MS = 12000, GAP_MS = 3000;
 let micOn = false, micStream = null;
-const micNote = t => { $("#micnote").textContent = t; };
+const micNote = (t, kind = "") => { $("#micnote").textContent = t; $("#micnote").className = "note " + kind; };
+
+// Voice processing strips the detail Shazam fingerprints. Ask for raw audio,
+// from the microphone chosen last time when there is one.
+async function openMic() {
+  const raw = {echoCancellation: false, noiseSuppression: false, autoGainControl: false};
+  let wanted = null;
+  try { wanted = localStorage.getItem("micDeviceId"); } catch {}
+  if (wanted) {
+    try { return await navigator.mediaDevices.getUserMedia({audio: {...raw, deviceId: {exact: wanted}}}); }
+    catch { /* unplugged since, fall back to the default */ }
+  }
+  return navigator.mediaDevices.getUserMedia({audio: raw});
+}
+
+// Labels only exist once the browser has permission, so this runs after openMic.
+async function listMics() {
+  const sel = $("#micdev");
+  let devices = [];
+  try { devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "audioinput" && d.label); }
+  catch { return; }
+  const current = micStream?.getAudioTracks()[0]?.getSettings().deviceId;
+  sel.innerHTML = devices.map(d =>
+    `<option value="${esc(d.deviceId)}" ${d.deviceId === current ? "selected" : ""}>${esc(d.label)}</option>`).join("");
+  sel.classList.toggle("hidden", devices.length < 2);
+}
+$("#micdev").onchange = () => {
+  try { localStorage.setItem("micDeviceId", $("#micdev").value); } catch {}
+  if (micStream) {
+    // The loop opens the new microphone before its next clip.
+    micStream.getTracks().forEach(t => t.stop());
+    micStream = null;
+  }
+};
+if (navigator.mediaDevices?.addEventListener) {
+  navigator.mediaDevices.addEventListener("devicechange", () => { if (micOn) listMics(); });
+}
 
 function recordClip(stream, ms) {
   return new Promise((resolve, reject) => {
@@ -200,60 +423,89 @@ function recordClip(stream, ms) {
 }
 
 async function micLoop() {
-  try {
-    // Voice processing strips the detail Shazam fingerprints. Ask for raw audio.
-    micStream = await navigator.mediaDevices.getUserMedia({audio: {
-      echoCancellation: false, noiseSuppression: false, autoGainControl: false}});
-  } catch (e) {
-    micOn = false; paintMic(); micNote("Microphone blocked: " + e.message); return;
-  }
   while (micOn) {
     try {
-      const clip = await recordClip(micStream, CLIP_MS);
+      if (!micStream) { micStream = await openMic(); await listMics(); }
+    } catch (e) {
+      micOn = false; paintMic(); micNote("Microphone blocked: " + e.message, "err"); return;
+    }
+    const stream = micStream;
+    try {
+      const clip = await recordClip(stream, CLIP_MS);
+      if (!micOn) break;
+      if (stream !== micStream) continue;  // the microphone changed mid-clip
+      micNote("Identifying…");
       const r = await fetch("api/match", {method: "POST", credentials: "same-origin",
         headers: {"content-type": "application/octet-stream"}, body: clip});
       if (!r.ok) throw new Error("HTTP " + r.status);
       const j = await r.json();
-      micNote(j.match ? `Matched ${j.match.artist} \u2014 ${j.match.title}`
-                      : `No match (input ${j.level_db} dBFS)`);
+      micNote(j.match ? `Matched ${j.match.artist} — ${j.match.title}`
+                      : `No match (input ${j.level_db} dBFS). Listening again…`,
+              j.match ? "ok" : "");
       refresh();
-    } catch (e) { micNote("Error: " + e.message); }
+    } catch (e) { micNote("Error: " + e.message, "err"); }
     if (micOn) await new Promise(r => setTimeout(r, GAP_MS));
   }
-  micStream.getTracks().forEach(t => t.stop());
+  micStream?.getTracks().forEach(t => t.stop());
   micStream = null;
+  $("#micdev").classList.add("hidden");
 }
 
 function paintMic() {
-  $("#mic").textContent = micOn ? "Stop this device\u2019s mic" : "Use this device\u2019s mic";
+  const b = $("#mic");
+  b.textContent = micOn ? "Stop this device’s mic" : "Use this device’s mic";
+  b.classList.toggle("stop", micOn);
+  b.classList.toggle("ghost", !micOn);
+  b.setAttribute("aria-pressed", String(micOn));
 }
 
 $("#mic").onclick = () => {
   if (!navigator.mediaDevices?.getUserMedia) {
-    micNote("This browser only allows microphone access over https, or on localhost.");
+    micNote("This browser only allows microphone access over https, or on localhost.", "err");
     return;
   }
   micOn = !micOn; paintMic();
-  if (micOn) { micNote("Listening from this device\u2026"); micLoop(); } else micNote("");
+  if (micOn) { micNote("Listening from this device. Keep this tab open and awake."); micLoop(); }
+  else { micNote(""); refresh(); }
 };
 
 // --- settings ---
 const FIELDS = {
-  listenbrainz: [["token", "User token", "password"], ["url", "Server URL (optional)", "text"]],
-  maloja: [["url", "Server URL", "text"], ["key", "API key", "password"]],
-  librefm: [["username", "User name", "text"], ["password_hash", "Password md5 hash", "password"]],
+  listenbrainz: [["token", "User token", "password"], ["url", "Server URL (optional)", "url"]],
+  maloja: [["url", "Server URL", "url"], ["key", "API key", "password"]],
+  librefm: [["username", "User name", "text"], ["password", "Password", "password"]],
 };
 const TITLES = {lastfm: "Last.fm", librefm: "Libre.fm",
                 listenbrainz: "ListenBrainz", maloja: "Maloja"};
+const HINTS = {
+  listenbrainz: `Find your token at listenbrainz.org/settings.`,
+  maloja: `The URL of your Maloja server, and one of its API keys.`,
+  librefm: `The password is hashed before it is stored. scrobSter keeps only the hash, which is all Libre.fm needs.`,
+};
+
+function fieldHtml(name, info, [k, label, type]) {
+  const secret = type === "password";
+  const value = !secret && info[k] ? info[k] : "";
+  let placeholder = "";
+  if (secret && info.has_secret) placeholder = "saved — type to replace";
+  else if (k === "url" && name === "maloja") placeholder = "http://maloja:42010";
+  else if (k === "url" && name === "listenbrainz") placeholder = "https://api.listenbrainz.org";
+  return `<label>${label}
+    <input name="${k}" type="${type}" value="${esc(value)}" placeholder="${esc(placeholder)}"
+      autocomplete="off" ${type === "url" ? "" : ""}></label>`;
+}
 
 async function loadServices() {
-  const s = await api("api/services");
+  let s;
+  try { s = await api("api/services"); }
+  catch (e) { $("#services").innerHTML = `<span class="err">${esc(e.message)}</span>`; return; }
   $("#room_mic").checked = !!me.room_mic;
-  $("#apitoken").textContent = me.api_token || "(none)";
+  paintToken();
   $("#services").innerHTML = Object.keys(TITLES).map(name => {
     const info = s[name];
     const state = info.connected
-      ? `<span class="badge ok">connected${info.username ? " as " + esc(info.username) : ""}</span>`
+      ? `<span class="badge ok">connected${info.username ? " as " + ext(info.profile_url, esc(info.username), "plain") : ""}</span>`
+        + (info.profile_url ? ` ${ext(info.profile_url, "profile", "ext small muted")}` : "")
       : `<span class="badge muted">not connected</span>`;
     if (name === "lastfm") {
       return `<div class="service"><div class="between">
@@ -261,118 +513,275 @@ async function loadServices() {
         <div class="row">
           ${info.app_registered
             ? `<button class="ghost" data-lastfm="start">${info.connected ? "Reconnect" : "Connect"}</button>`
-            : `<span class="muted small">Set LASTFM_API_KEY and LASTFM_API_SECRET first</span>`}
+            : `<span class="muted small">Set <code>LASTFM_API_KEY</code> and <code>LASTFM_API_SECRET</code> first</span>`}
           ${info.connected ? `<button class="danger" data-clear="${name}">Remove</button>` : ""}
         </div></div>
-        <p id="lastfm-step" class="muted small"></p></div>`;
+        <p id="lastfm-step" class="feedback muted"></p></div>`;
     }
     return `<div class="service"><div class="between">
       <div><b>${TITLES[name]}</b> ${state}</div>
       ${info.connected ? `<button class="danger" data-clear="${name}">Remove</button>` : ""}
       </div>
-      <form data-service="${name}" class="row" style="margin-top:.5rem">
-        ${FIELDS[name].map(([k, label, type]) =>
-          `<label class="grow">${label}
-            <input name="${k}" type="${type}" ${k === "url" && name === "maloja"
-              ? 'placeholder="http://maloja:42010"' : ""}></label>`).join("")}
-        <button type="submit" style="align-self:end">Save</button>
-      </form></div>`;
+      <p class="note" style="margin-top:.25rem">${HINTS[name]}</p>
+      <form data-service="${name}" class="row">
+        ${FIELDS[name].map(f => fieldHtml(name, info, f)).join("")}
+        <button type="submit">${info.connected ? "Update" : "Connect"}</button>
+      </form>
+      <p class="feedback" aria-live="polite"></p></div>`;
   }).join("");
 
-  $$("#services form").forEach(f => f.onsubmit = async e => {
+  $$("#services form").forEach(f => f.onsubmit = e => {
     e.preventDefault();
-    const body = Object.fromEntries([...new FormData(f)].filter(([, v]) => v !== ""));
-    try { await send(`api/services/${f.dataset.service}`, "PUT", body); loadServices(); }
-    catch (err) { alert(err.message); }
+    const btn = f.querySelector("button[type=submit]");
+    const note = f.parentElement.querySelector(".feedback");
+    const body = Object.fromEntries([...new FormData(f)].filter(([, v]) => v.trim() !== ""));
+    if (!Object.keys(body).length) {
+      note.className = "feedback err"; note.textContent = "Nothing to save."; return;
+    }
+    busy(btn, async () => {
+      try {
+        await send(`api/services/${f.dataset.service}`, "PUT", body);
+        me = await api("api/me");
+        await loadServices();
+        toast(`${TITLES[f.dataset.service]} saved`, "ok");
+      } catch (err) { note.className = "feedback err"; note.textContent = err.message; }
+    });
   });
-  $$("[data-clear]").forEach(b => b.onclick = async () => {
-    await api(`api/services/${b.dataset.clear}`, {method: "DELETE"});
-    loadServices();
+  $$("[data-clear]").forEach(b => b.onclick = () => {
+    const name = TITLES[b.dataset.clear];
+    if (!confirm(`Disconnect ${name}? Your history stays, new plays stop going there.`)) return;
+    busy(b, async () => {
+      try {
+        await api(`api/services/${b.dataset.clear}`, {method: "DELETE"});
+        me = await api("api/me");
+        await loadServices();
+        toast(`${name} disconnected`);
+      } catch (e) { toast(e.message, "err"); }
+    });
   });
   const start = $('[data-lastfm="start"]');
   if (start) start.onclick = lastfmConnect;
 }
 
+// --- the server's audio input, for an administrator ---
+const OTHER = "__other__";
+let audioState = null;
+
+function audioChoice() {
+  const sel = $("#audio_device");
+  return sel.value === OTHER ? $("#audio_custom").value.trim() : sel.value;
+}
+
+function paintAudio(a) {
+  audioState = a;
+  const sel = $("#audio_device");
+  const known = a.devices.some(d => d.device === a.device);
+  sel.innerHTML = a.devices.map(d =>
+    `<option value="${esc(d.device)}" ${d.device === a.device ? "selected" : ""}>${esc(d.label)} (${esc(d.device)})</option>`).join("")
+    + `<option value="${OTHER}" ${known ? "" : "selected"}>${a.devices.length ? "Other…" : "Type a device name"}</option>`;
+  $("#audio_custom").value = known ? "" : a.device;
+  $("#audio_custom_wrap").classList.toggle("hidden", known);
+  $("#audio_backend").value = a.backend;
+  $("#audio_reset").classList.toggle("hidden", !a.saved);
+  $("#audio_source").innerHTML = a.saved
+    ? `Chosen here. The environment says <code>AUDIO_DEVICE=${esc(a.env_device)}</code>, which is ignored while this is set.`
+    : `From the environment: <code>AUDIO_BACKEND=${esc(a.backend)}</code> <code>AUDIO_DEVICE=${esc(a.device)}</code>.`
+      + (a.devices.length ? "" : " ffmpeg could not list devices for this format, so type the name.");
+}
+
+async function loadAudio() {
+  $("#audio-section").classList.remove("hidden");
+  try { paintAudio(await api("api/audio")); }
+  catch (e) { $("#audio_source").innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+}
+
+$("#audio_device").onchange = () => {
+  const other = $("#audio_device").value === OTHER;
+  $("#audio_custom_wrap").classList.toggle("hidden", !other);
+  if (other) $("#audio_custom").focus();
+  $("#audio_note").textContent = "";
+};
+
+$("#audio_apply").onclick = () => busy($("#audio_apply"), async () => {
+  const device = audioChoice();
+  if (!device) { $("#audio_note").className = "note err"; $("#audio_note").textContent = "Choose a device first."; return; }
+  const backend = $("#audio_backend").value.trim();
+  try {
+    const a = await send("api/audio", "PUT", {device, backend: backend !== audioState?.backend ? backend : ""});
+    paintAudio({...a, devices: audioState?.devices || []});
+    $("#audio_note").className = "note ok";
+    $("#audio_note").textContent = `Recording from ${device} from the next capture on.`;
+    toast("Audio input changed", "ok");
+    refresh();
+  } catch (e) { $("#audio_note").className = "note err"; $("#audio_note").textContent = e.message; }
+});
+
+$("#audio_test").onclick = () => busy($("#audio_test"), async () => {
+  const note = $("#audio_note");
+  note.className = "note"; note.textContent = "Recording three seconds…";
+  try {
+    const r = await send("api/audio/test", "POST",
+                         {device: audioChoice(), backend: $("#audio_backend").value.trim()});
+    note.className = "note " + (r.silent ? "err" : "ok");
+    note.textContent = r.silent
+      ? `Peak ${r.level_db} dBFS: that device is silent. Play something, or pick another.`
+      : `Peak ${r.level_db} dBFS: it hears sound.` + (r.level_db < -40 ? " Quiet, though. Move it closer or raise the volume." : "");
+  } catch (e) { note.className = "note err"; note.textContent = e.message; }
+});
+
+$("#audio_reset").onclick = () => busy($("#audio_reset"), async () => {
+  try {
+    const a = await api("api/audio", {method: "DELETE"});
+    paintAudio({...a, devices: audioState?.devices || []});
+    $("#audio_note").textContent = "";
+    toast("Back to the environment setting", "ok");
+    refresh();
+  } catch (e) { toast(e.message, "err"); }
+});
+
 async function lastfmConnect() {
   const step = $("#lastfm-step");
-  step.textContent = "Asking Last.fm\u2026";
+  step.className = "feedback muted";
+  step.textContent = "Asking Last.fm…";
   let r;
   try { r = await send("api/lastfm/start", "POST", {}); }
-  catch (e) { step.innerHTML = `<span class="err">${esc(e.message)}</span>`; return; }
-  window.open(r.url, "_blank", "noopener");
-  step.innerHTML = `Approve scrobSter in the new tab, then
-    <button id="lastfm-done" class="ghost">I approved it</button>`;
-  $("#lastfm-done").onclick = async () => {
-    step.textContent = "Finishing\u2026";
+  catch (e) { step.className = "feedback err"; step.textContent = e.message; return; }
+  const tab = window.open(r.url, "_blank", "noopener");
+  step.innerHTML = `${tab ? "Approve scrobSter in the new tab" : `<a href="${esc(r.url)}" target="_blank" rel="noopener" class="accent">Open Last.fm</a> and approve scrobSter`}, then
+    <button id="lastfm-done" class="ghost small">I approved it</button>`;
+  $("#lastfm-done").onclick = () => busy($("#lastfm-done"), async () => {
     try {
       const done = await send("api/lastfm/finish", "POST", {token: r.token});
-      step.innerHTML = `<span class="ok">Connected as ${esc(done.username)}</span>`;
-      me = await api("api/me"); loadServices();
-    } catch (e) { step.innerHTML = `<span class="err">${esc(e.message)}</span>`; }
-  };
+      me = await api("api/me");
+      await loadServices();
+      toast(`Last.fm connected as ${done.username}`, "ok");
+    } catch (e) { step.className = "feedback err"; step.textContent = e.message; }
+  });
 }
 
 $("#room_mic").onchange = async e => {
-  me = {...me, ...await send("api/me", "PUT", {room_mic: e.target.checked})};
+  const on = e.target.checked;
+  e.target.disabled = true;
+  try {
+    me = {...me, ...await send("api/me", "PUT", {room_mic: on})};
+    toast(on ? "The room microphone now scrobbles for you" : "Room microphone off for you", "ok");
+  } catch (err) { e.target.checked = !on; toast(err.message, "err"); }
+  finally { e.target.disabled = false; }
 };
 
-$("#newtoken").onclick = async () => {
-  const r = await send("api/me/token", "POST", {});
-  me.api_token = r.api_token;
-  $("#apitoken").textContent = r.api_token;
+// --- API token: hidden until asked for, so a screen share does not leak it ---
+let tokenShown = false;
+function paintToken() {
+  const code = $("#apitoken");
+  if (!me.api_token) { code.textContent = "(none)"; code.className = ""; return; }
+  code.textContent = tokenShown ? me.api_token : "•".repeat(24);
+  code.className = tokenShown ? "" : "masked";
+  $("#showtoken").textContent = tokenShown ? "Hide" : "Show";
+  $("#showtoken").setAttribute("aria-pressed", String(tokenShown));
+}
+$("#showtoken").onclick = () => { tokenShown = !tokenShown; paintToken(); };
+$("#copytoken").onclick = async () => {
+  if (!me.api_token) return;
+  try {
+    await navigator.clipboard.writeText(me.api_token);
+    toast("Token copied", "ok");
+  } catch {
+    tokenShown = true; paintToken();
+    const range = document.createRange(); range.selectNodeContents($("#apitoken"));
+    getSelection().removeAllRanges(); getSelection().addRange(range);
+    toast("Select the token and copy it");
+  }
+};
+$("#newtoken").onclick = () => {
+  if (!confirm("Replace your API token? Anything using the old one stops working.")) return;
+  busy($("#newtoken"), async () => {
+    try {
+      const r = await send("api/me/token", "POST", {});
+      me.api_token = r.api_token; tokenShown = true; paintToken();
+      toast("New token made", "ok");
+    } catch (e) { toast(e.message, "err"); }
+  });
 };
 
-$("#pwform").onsubmit = async e => {
+$("#pwform").onsubmit = e => {
   e.preventDefault();
   const note = $("#pwnote");
-  try {
-    await send("api/me/password", "POST",
-               {current: $("#pw_current").value, password: $("#pw_new").value});
-    note.className = "small ok"; note.textContent = "Password changed.";
-    e.target.reset();
-  } catch (err) { note.className = "small err"; note.textContent = err.message; }
+  busy(e.target.querySelector("button"), async () => {
+    try {
+      await send("api/me/password", "POST",
+                 {current: $("#pw_current").value, password: $("#pw_new").value});
+      setNote(note, "Password changed.", "ok");
+      e.target.reset();
+    } catch (err) { setNote(note, err.message, "err"); }
+  });
 };
 
 // --- users ---
 async function loadUsers() {
-  const list = await api("api/users");
+  let list;
+  try { list = await api("api/users"); } catch (e) { toast(e.message, "err"); return; }
   $("#users").innerHTML = list.map(u => `<tr>
-    <td>${esc(u.username)}</td>
+    <td><b>${esc(u.username)}</b>${u.id === me.id ? ` <span class="muted small">(you)</span>` : ""}</td>
     <td class="muted">${u.is_admin ? "administrator" : "user"}</td>
     <td class="muted">${u.room_mic ? "yes" : "no"}</td>
-    <td>${u.id === me.id ? "" : `<div class="row">
-      <button class="ghost" data-pw="${u.id}">Set password</button>
-      <button class="danger" data-del="${u.id}">Remove</button></div>`}</td>
-    </tr>`).join("");
-  $$("[data-del]").forEach(b => b.onclick = async () => {
-    if (!confirm("Remove this account and its history?")) return;
-    await api(`api/users/${b.dataset.del}`, {method: "DELETE"});
-    loadUsers();
+    <td>${u.id === me.id ? "" : `<div class="row nowrap">
+      <button class="ghost small" data-pw="${u.id}" aria-expanded="false">Set password</button>
+      <button class="danger small" data-del="${u.id}" data-name="${esc(u.username)}">Remove</button></div>`}</td>
+    </tr>
+    <tr class="hidden" id="pwrow-${u.id}"><td colspan="4">
+      <form class="inline-form" data-setpw="${u.id}">
+        <label class="grow">New password for ${esc(u.username)}
+          <input type="password" minlength="8" autocomplete="new-password" placeholder="At least 8 characters" required></label>
+        <button type="submit">Save</button>
+        <button type="button" class="ghost" data-cancel="${u.id}">Cancel</button>
+      </form></td></tr>`).join("");
+  $$("[data-del]").forEach(b => b.onclick = () => {
+    if (!confirm(`Remove ${b.dataset.name} and their history? This cannot be undone.`)) return;
+    busy(b, async () => {
+      try { await api(`api/users/${b.dataset.del}`, {method: "DELETE"});
+            toast(`${b.dataset.name} removed`); loadUsers(); }
+      catch (e) { toast(e.message, "err"); }
+    });
   });
-  $$("[data-pw]").forEach(b => b.onclick = async () => {
-    const pw = prompt("New password for this account (at least 8 characters):");
-    if (!pw) return;
-    try { await send(`api/users/${b.dataset.pw}`, "PUT", {password: pw});
-          alert("Password changed."); }
-    catch (e) { alert(e.message); }
+  $$("[data-pw]").forEach(b => b.onclick = () => {
+    const row = $(`#pwrow-${b.dataset.pw}`);
+    const open = row.classList.toggle("hidden");
+    b.setAttribute("aria-expanded", String(!open));
+    if (!open) row.querySelector("input").focus();
+  });
+  $$("[data-cancel]").forEach(b => b.onclick = () => {
+    $(`#pwrow-${b.dataset.cancel}`).classList.add("hidden");
+    $(`[data-pw="${b.dataset.cancel}"]`).setAttribute("aria-expanded", "false");
+  });
+  $$("[data-setpw]").forEach(f => f.onsubmit = e => {
+    e.preventDefault();
+    busy(f.querySelector("button[type=submit]"), async () => {
+      try {
+        await send(`api/users/${f.dataset.setpw}`, "PUT", {password: f.querySelector("input").value});
+        toast("Password changed", "ok");
+        f.reset(); f.closest("tr").classList.add("hidden");
+      } catch (err) { toast(err.message, "err"); }
+    });
   });
 }
 
-$("#userform").onsubmit = async e => {
+$("#userform").onsubmit = e => {
   e.preventDefault();
   const note = $("#usernote");
-  try {
-    await send("api/users", "POST", {username: $("#new_user").value,
-      password: $("#new_pass").value, is_admin: $("#new_admin").checked});
-    note.className = "small ok"; note.textContent = "Account created.";
-    e.target.reset(); loadUsers();
-  } catch (err) { note.className = "small err"; note.textContent = err.message; }
+  busy(e.target.querySelector("button[type=submit]"), async () => {
+    try {
+      await send("api/users", "POST", {username: $("#new_user").value,
+        password: $("#new_pass").value, is_admin: $("#new_admin").checked});
+      setNote(note, "Account created.", "ok");
+      e.target.reset(); loadUsers();
+    } catch (err) { setNote(note, err.message, "err"); }
+  });
 };
 
-$("#signout").onclick = async () => {
-  await api("api/logout", {method: "POST"});
+$("#signout").onclick = () => busy($("#signout"), async () => {
+  await api("api/logout", {method: "POST"}).catch(() => {});
   location.href = "login";
-};
+});
 
 // --- start ---
 (async () => {
@@ -380,8 +789,11 @@ $("#signout").onclick = async () => {
   $("#who").textContent = me.username + (me.is_admin ? " (admin)" : "");
   $("#tab-users").hidden = !me.is_admin;
   paintMic();
-  refresh();
-  setInterval(refresh, 5000);
+  showView(location.hash.slice(1));
+  await refresh();
+  // Poll only while the tab is visible, and catch up as soon as it comes back.
+  setInterval(() => { if (!document.hidden) refresh(); }, 5000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 })();
 </script>
 </body>

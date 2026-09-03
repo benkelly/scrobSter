@@ -68,6 +68,11 @@ def _create_schema(c):
 
         CREATE INDEX IF NOT EXISTS idx_scrobbles_user ON scrobbles(user_id, match_id);
         CREATE INDEX IF NOT EXISTS idx_matches_ts ON matches(ts DESC);
+
+        -- Instance-wide choices made in the web page, such as the audio device.
+        CREATE TABLE IF NOT EXISTS settings(
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL);
         """
     )
 
@@ -179,3 +184,21 @@ def recent(user_id, limit=50):
         if len(out) >= limit:
             break
     return out
+
+
+# --- settings ----------------------------------------------------------------
+
+def get_setting(key, default=None):
+    with _conn() as c:
+        row = c.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_setting(key, value):
+    with _conn() as c:
+        if value is None:
+            c.execute("DELETE FROM settings WHERE key=?", (key,))
+        else:
+            c.execute("INSERT INTO settings(key, value) VALUES(?,?)"
+                      " ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                      (key, str(value)))

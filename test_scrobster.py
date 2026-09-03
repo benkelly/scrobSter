@@ -9,9 +9,12 @@ import wave
 
 from scrobster.config import _load_options_json
 
+from scrobster.accounts import merge_credential, normalise_credential
 from scrobster.listener import (MAX_SEGMENT_SECONDS, NOW_PLAYING_REFRESH_SECONDS,
-                                parse_track, peak_dbfs, segment_seconds,
-                                should_announce, should_clear, should_scrobble)
+                                parse_device_list, parse_proc_asound_pcm, parse_track,
+                                peak_dbfs, segment_seconds, should_announce,
+                                should_clear, should_scrobble)
+from scrobster.scrobble import profile_urls
 
 
 def _wav(amplitude):
@@ -64,6 +67,58 @@ def main():
     assert info == {"track_key": "k1", "title": "T", "artist": "A", "album": "Al",
                     "art_url": "u", "offset": 56.98}
     assert parse_track({"track": {"key": "k"}})["offset"] is None, "offset may be absent"
+
+    # the device picker reads ffmpeg's listings
+    mac = """[AVFoundation indev @ 0x1] AVFoundation video devices:
+[AVFoundation indev @ 0x1] [0] FaceTime HD Camera
+[AVFoundation indev @ 0x1] AVFoundation audio devices:
+[AVFoundation indev @ 0x1] [0] BlackHole 2ch
+[AVFoundation indev @ 0x1] [1] MacBook Pro Microphone
+: Input/output error"""
+    assert parse_device_list("avfoundation", mac) == [
+        {"device": ":0", "label": "BlackHole 2ch"},
+        {"device": ":1", "label": "MacBook Pro Microphone"}], "video devices are skipped"
+    linux = """Auto-detected sources for alsa:
+* default [Playback/recording through the PulseAudio sound server]
+  hw:CARD=PCH,DEV=0 [HDA Intel PCH, ALC3232 Analog]
+"""
+    assert parse_device_list("alsa", linux) == [
+        {"device": "default", "label": "Playback/recording through the PulseAudio sound server",
+         "default": True},
+        {"device": "hw:CARD=PCH,DEV=0", "label": "HDA Intel PCH, ALC3232 Analog", "default": False}]
+    assert parse_device_list("alsa", "Cannot list sources for alsa") == []
+    pcm = """00-00: ALC3232 Analog : ALC3232 Analog : playback 1 : capture 1
+00-03: HDMI 0 : HDMI 0 : playback 1
+01-00: USB Audio : USB Audio : capture 1
+"""
+    assert parse_proc_asound_pcm(pcm) == [
+        {"device": "hw:0,0", "label": "ALC3232 Analog"},
+        {"device": "hw:1,0", "label": "USB Audio"}], "only capture devices"
+
+    # a password is hashed before it is stored, and never kept as typed
+    saved = normalise_credential({"username": "u", "password": "hunter2"})
+    assert saved == {"username": "u", "password_hash": "2ab96390c7dbe3439de74d0c9b0b1767"}
+    assert normalise_credential({"password_hash": "abc", "password": "x"}) == \
+        {"password_hash": "abc"}, "a given hash wins over a password"
+    assert normalise_credential({"token": "t", "url": ""}) == {"token": "t"}, "blanks dropped"
+
+    # the settings form: blanks keep the saved value, a new password replaces the hash
+    saved = {"username": "u", "password_hash": "2ab96390c7dbe3439de74d0c9b0b1767"}
+    assert merge_credential(saved, {"username": "v", "password": ""}) == \
+        {"username": "v", "password_hash": "2ab96390c7dbe3439de74d0c9b0b1767"}
+    assert merge_credential(saved, {"password": "other"}) == \
+        {"username": "u", "password_hash": "795f3202b17cb6bc3d4b771d8c6c9eaf"}, "new password wins"
+    assert merge_credential({"url": "http://m:1", "key": "k"}, {"url": "http://m:2", "key": ""}) == \
+        {"url": "http://m:2", "key": "k"}, "a URL change keeps the key"
+
+    # profile links, where the service can show a listen
+    assert profile_urls({"librefm": {"username": "me", "password_hash": "h"},
+                         "listenbrainz": {"token": "t", "username": "me"},
+                         "maloja": {"url": "http://maloja:42010/", "key": "k"}}) == {
+        "librefm": "https://libre.fm/user/me",
+        "listenbrainz": "https://listenbrainz.org/user/me",
+        "maloja": "http://maloja:42010"}
+    assert profile_urls({"listenbrainz": {"token": "t"}}) == {}, "no user name, no link"
 
     # a silent device must be detectable, not just "no match forever"
     assert peak_dbfs(_wav(0)) == -99.0, "digital silence"
