@@ -164,8 +164,12 @@ async def services(user: dict = Depends(require_user)):
 
 @app.put("/api/services/{service}")
 async def set_service(service: str, body: dict, user: dict = Depends(require_user)):
+    """Set or update one service. Fields left out or empty keep their saved value,
+    so the settings form can change a URL without asking for the secret again."""
+    existing = accounts.get_credentials(user["id"]).get(service) or {}
+    data = {**existing, **{k: v for k, v in body.items() if v not in ("", None)}}
     try:
-        accounts.set_credential(user["id"], service, body)
+        accounts.set_credential(user["id"], service, data)
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {"ok": True}
@@ -222,6 +226,7 @@ async def status(user: dict = Depends(require_user)):
         "last_attempt": listener.last_attempt,
         "services": scrobble.enabled_services(accounts.get_credentials(user["id"])),
         "interval": config.MATCH_INTERVAL,
+        "stop_seconds": config.NOW_PLAYING_STOP_SECONDS,
         "room_mic": bool(user["room_mic"]),
     }
 
@@ -314,6 +319,11 @@ async def remove_user(user_id: int, admin: dict = Depends(require_admin)):
 @app.get("/app.css")
 async def stylesheet():
     return FileResponse(_static / "app.css", media_type="text/css")
+
+
+@app.get("/icon.png")
+async def icon():
+    return FileResponse(_static / "icon.png", media_type="image/png")
 
 
 @app.get("/login")

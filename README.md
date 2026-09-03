@@ -1,4 +1,4 @@
-<img src="icon.png" alt="scrobSter" width="120" align="right">
+<img src="scrobster/static/icon.png" alt="scrobSter" width="120" align="right">
 
 # scrobSter
 
