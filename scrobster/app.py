@@ -18,6 +18,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from . import accounts, config, db, scrobble
+from . import __version__
 from .listener import (SILENT_DBFS, Listener, decode_to_wav, list_devices, peak_dbfs,
                        probe_level)
 
@@ -236,6 +237,7 @@ async def lastfm_finish(body: dict, user: dict = Depends(require_user)):
 async def status(user: dict = Depends(require_user)):
     credentials = accounts.get_credentials(user["id"])
     return {
+        "version": __version__,
         "listening": listener.listening,
         "started_at": listener.started_at,
         "last_match": listener.last_match,

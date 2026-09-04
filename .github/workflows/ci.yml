@@ -32,10 +32,45 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      # write, because a merge to main tags the release.
+      contents: write
       packages: write
     steps:
       - uses: actions/checkout@v5
+
+      # A merge to main releases when __version__ carries a number that has no
+      # tag yet. That keeps one number in one place: bump it in the pull
+      # request, and the merge publishes the image and the tag together.
+      - name: Read the version
+        id: version
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' scrobster/__init__.py)"
+          if ! printf '%s' "${version}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "__version__ in scrobster/__init__.py is not x.y.z: '${version}'" >&2
+            exit 1
+          fi
+
+          release=false
+          if [ "${GITHUB_REF}" = "refs/heads/main" ] \
+              && [ "${GITHUB_EVENT_NAME}" != "pull_request" ]; then
+            if git ls-remote --exit-code --tags origin "refs/tags/v${version}" \
+                > /dev/null 2>&1; then
+              echo "::notice::v${version} is already released, so nothing is tagged." \
+                "Bump __version__ to cut the next one."
+            else
+              release=true
+            fi
+          fi
+
+          echo "Version: ${version}"
+          echo "Release: ${release}"
+          {
+            echo "version=${version}"
+            echo "minor=${version%.*}"
+            echo "release=${release}"
+          } >> "${GITHUB_OUTPUT}"
+
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
@@ -51,6 +86,8 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Smoke test the image
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           # A root-owned bind mount is what Home Assistant gives an add-on for
           # /data. A named volume would hide the problem, because it inherits
@@ -71,7 +108,10 @@ jobs:
           curl -sf -c /tmp/jar -X POST http://localhost:8000/api/login \
             -H 'content-type: application/json' \
             -d '{"username":"admin","password":"smoke-test-password"}' >/dev/null
-          curl -sf -b /tmp/jar http://localhost:8000/api/status | grep -q '"listening":false'
+          curl -sf -b /tmp/jar http://localhost:8000/api/status > /tmp/status.json
+          grep -q '"listening":false' /tmp/status.json
+          # The image has to report the version this run may release.
+          grep -q "\"version\":\"${VERSION}\"" /tmp/status.json
           docker exec smoke ffmpeg -version >/dev/null
           # The database must exist, or the add-on cannot start.
           sudo test -f /tmp/hadata/scrobster.db
@@ -97,6 +137,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # The two raw tags carry the version on a releasing run. A tag pushed by
+      # a workflow does not start another one, so the version tags have to be
+      # applied here rather than by the tag push at the end. The semver lines
+      # still cover a tag pushed by hand.
       - uses: docker/metadata-action@v5
         id: meta
         with:
@@ -104,6 +148,8 @@ jobs:
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=branch
+            type=raw,value=${{ steps.version.outputs.version }},enable=${{ steps.version.outputs.release == 'true' }}
+            type=raw,value=${{ steps.version.outputs.minor }},enable=${{ steps.version.outputs.release == 'true' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,format=short
@@ -118,3 +164,21 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Last, so a release only ever names a commit whose image is published.
+      - name: Tag the release
+        if: steps.version.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${VERSION}" -m "scrobSter ${VERSION}"
+          git push origin "v${VERSION}"
+          # --verify-tag, so the release is attached to the tag just pushed
+          # rather than creating a second, lightweight one.
+          gh release create "v${VERSION}" --verify-tag --generate-notes \
+            --title "scrobSter ${VERSION}"
