@@ -252,7 +252,7 @@ through Home Assistant ingress.
 | Endpoint | Purpose |
 |---|---|
 | `POST /api/login` `{username, password}` | sign in, sets a session cookie |
-| `GET /api/status` | listening state, last match, input level (`level_db`), profile links |
+| `GET /api/status` | version, listening state, last match, input level (`level_db`), profile links |
 | `POST /api/listen` `{"on": true}` | start or stop the shared microphone. Administrator only |
 | `POST /api/match` (raw audio body) | identify one clip and scrobble it for the caller |
 | `GET /api/recent?limit=50` | that user's scrobble history |
@@ -324,6 +324,21 @@ So a missed song usually means one of these:
 
 The listener skips the request when the input is silent, so silence costs no
 API quota.
+
+## Releasing
+
+The version lives in one place, `__version__` in `scrobster/__init__.py`, and
+`GET /api/status` reports it.
+
+To cut a release, bump that number in the pull request. When it merges, CI
+publishes the image as `ghcr.io/benkelly/scrobster:<version>`, moves the
+matching `x.y` tag, pushes the git tag `v<version>` and opens a GitHub release
+with generated notes. A merge that does not change the number publishes only
+`latest` and the commit tag, so ordinary work needs no bump.
+
+The Home Assistant add-on pins the exact version, so bump
+[ha-addons](https://github.com/benkelly/ha-addons) after the release, never
+before: the add-on cannot pull a tag that has not been built.
 
 ## Notes
 
