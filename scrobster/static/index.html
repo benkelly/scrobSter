@@ -35,6 +35,11 @@
         <button id="mic" class="ghost">Use this device&rsquo;s mic</button>
         <select id="micdev" class="hidden" aria-label="Which microphone" title="Which microphone"></select>
       </div>
+      <div id="micmeter" class="meter live hidden"
+           title="Live level from this device&rsquo;s microphone">
+        <span class="bar"><span class="fill"></span><span class="peak"></span></span>
+        <span>this device <span id="micdb">&mdash;</span> dBFS</span>
+      </div>
       <div id="status" class="status" aria-live="polite"></div>
       <p id="adminnote" class="note"></p>
       <p id="micnote" class="note" aria-live="polite"></p>
@@ -249,6 +254,13 @@ $("nav").addEventListener("keydown", e => {
 });
 window.addEventListener("hashchange", () => showView(location.hash.slice(1)));
 
+// --- levels ---
+// Both meters read the same way: -60 dBFS is the quiet end of the bar and 0
+// dBFS is full, below -40 is quiet, below -80 is silence.
+const SILENT_DB = -80, QUIET_DB = -40, FLOOR_DB = -60;
+const meterPct = db => Math.max(0, Math.min(100, (db - FLOOR_DB) / -FLOOR_DB * 100));
+const meterClass = db => db < SILENT_DB ? " silent" : db < QUIET_DB ? " quiet" : "";
+
 // --- listening ---
 let lastHistory = "";
 
@@ -261,15 +273,17 @@ function paintStatus(st) {
     parts.push(`<span class="warn">no service connected &middot;
       <a href="#settings" class="accent">connect one</a></span>`);
   }
-  if (st.level_db != null) {
-    const silent = st.level_db < -80, quiet = st.level_db < -40;
-    // -60 dBFS is the quiet end of the bar, 0 dBFS is full.
-    const pct = Math.max(0, Math.min(100, (st.level_db + 60) / 60 * 100));
-    parts.push(`<span class="meter${silent ? " silent" : quiet ? " quiet" : ""}"
+  // Only while it is running: last_level_db is the last capture, and showing it
+  // after a stop reads as a live level that has frozen.
+  if (st.level_db != null && st.listening) {
+    parts.push(`<span class="meter${meterClass(st.level_db)}"
         title="Peak level of the last capture">
-      <span class="bar"><span class="fill" style="width:${pct.toFixed(0)}%"></span></span>
+      <span class="bar"><span class="fill"
+        style="width:${meterPct(st.level_db).toFixed(0)}%"></span></span>
       <span>input ${esc(st.level_db)} dBFS</span></span>`);
-    if (silent) parts.push(`<span class="err">&#9888; silent, check the audio input</span>`);
+    if (st.level_db < SILENT_DB) {
+      parts.push(`<span class="err">&#9888; silent, check the audio input</span>`);
+    }
   }
   if (st.attempts) {
     const lastTry = st.last_attempt ? ` &middot; last ${esc(ago(st.last_attempt))}` : "";
@@ -401,13 +415,77 @@ async function listMics() {
 $("#micdev").onchange = () => {
   try { localStorage.setItem("micDeviceId", $("#micdev").value); } catch {}
   if (micStream) {
-    // The loop opens the new microphone before its next clip.
+    // The loop opens the new microphone, and its meter, before the next clip.
+    stopMicMeter();
     micStream.getTracks().forEach(t => t.stop());
     micStream = null;
   }
 };
 if (navigator.mediaDevices?.addEventListener) {
   navigator.mediaDevices.addEventListener("devicechange", () => { if (micOn) listMics(); });
+}
+
+// The clip loop only reports a level once a clip has been sent, which is too
+// late to aim a microphone. This taps the same stream and paints every frame,
+// so you can see the room while you move the phone.
+let micCtx = null, micNode = null, micSource = null, micRaf = 0;
+
+function startMicMeter(stream) {
+  stopMicMeter();
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx || !stream.getAudioTracks().length) return;  // no meter, no harm
+  try {
+    micCtx = new Ctx();
+    micSource = micCtx.createMediaStreamSource(stream);
+    micNode = micCtx.createAnalyser();
+    micNode.fftSize = 1024;
+    // Not connected to the destination, so nothing is played back.
+    micSource.connect(micNode);
+  } catch { stopMicMeter(); return; }
+  // Started from the button press, but Safari can still hand back a suspended
+  // context.
+  micCtx.resume?.().catch(() => {});
+
+  const el = $("#micmeter"), fill = el.querySelector(".fill"),
+        mark = el.querySelector(".peak"), out = $("#micdb");
+  const buf = new Float32Array(micNode.fftSize);
+  let level = SILENT_DB, hold = SILENT_DB, holdAt = 0, wroteAt = 0;
+  el.classList.remove("hidden");
+
+  const HOLD_MS = 1000;
+  const tick = now => {
+    if (!micNode) return;
+    // A reader that throws would otherwise leave the last bar on screen
+    // looking live, which is the one thing a meter must never do.
+    try { micNode.getFloatTimeDomainData(buf); }
+    catch { stopMicMeter(); return; }
+    let peak = 0;
+    for (const v of buf) { const a = Math.abs(v); if (a > peak) peak = a; }
+    const db = peak > 0 ? Math.max(SILENT_DB, 20 * Math.log10(peak)) : SILENT_DB;
+    // Rise at once, fall slowly: a beat registers, and the bar does not flicker
+    // between the frames inside one.
+    level = db > level ? db : Math.max(db, level - 0.6);
+    if (db >= hold || now - holdAt > HOLD_MS) { hold = db; holdAt = now; }
+
+    el.className = "meter live" + meterClass(level);
+    fill.style.width = meterPct(level).toFixed(1) + "%";
+    mark.style.left =
+      `clamp(0px, calc(${meterPct(hold).toFixed(1)}% - 1px), calc(100% - 2px))`;
+    // The number is for reading, not for animating.
+    if (now - wroteAt > 200) { out.textContent = level.toFixed(0); wroteAt = now; }
+    micRaf = requestAnimationFrame(tick);
+  };
+  micRaf = requestAnimationFrame(tick);
+}
+
+function stopMicMeter() {
+  if (micRaf) cancelAnimationFrame(micRaf);
+  micRaf = 0;
+  try { micSource?.disconnect(); } catch {}
+  try { micCtx?.close(); } catch {}
+  micCtx = micNode = micSource = null;
+  $("#micmeter").classList.add("hidden");
+  $("#micdb").textContent = "\u2014";
 }
 
 function recordClip(stream, ms) {
@@ -425,7 +503,11 @@ function recordClip(stream, ms) {
 async function micLoop() {
   while (micOn) {
     try {
-      if (!micStream) { micStream = await openMic(); await listMics(); }
+      if (!micStream) {
+        micStream = await openMic();
+        await listMics();
+        startMicMeter(micStream);
+      }
     } catch (e) {
       micOn = false; paintMic(); micNote("Microphone blocked: " + e.message, "err"); return;
     }
@@ -446,6 +528,7 @@ async function micLoop() {
     } catch (e) { micNote("Error: " + e.message, "err"); }
     if (micOn) await new Promise(r => setTimeout(r, GAP_MS));
   }
+  stopMicMeter();
   micStream?.getTracks().forEach(t => t.stop());
   micStream = null;
   $("#micdev").classList.add("hidden");
@@ -465,8 +548,14 @@ $("#mic").onclick = () => {
     return;
   }
   micOn = !micOn; paintMic();
-  if (micOn) { micNote("Listening from this device. Keep this tab open and awake."); micLoop(); }
-  else { micNote(""); refresh(); }
+  if (micOn) {
+    micNote("Listening from this device. Keep this tab open and awake.");
+    refresh();
+    micLoop();
+  }
+  // Stop the meter now rather than when the clip in flight finishes, so the
+  // button and the bar agree.
+  else { stopMicMeter(); micNote(""); refresh(); }
 };
 
 // --- settings ---

@@ -172,8 +172,8 @@ ffmpeg -i /tmp/t.wav -af volumedetect -f null - 2>&1 | grep mean_volume
 Play music, then read the result. A value near -91 dB is digital silence, and
 that device is the wrong one. A value near -20 dB is good.
 
-The web page shows the same level as `input <n> dBFS`. It warns you when the
-device is silent.
+The web page shows the same level as `input <n> dBFS` while the room
+microphone is listening. It warns you when the device is silent.
 
 Index 0 is not always the microphone. On a Mac with virtual audio software, index
 0 is often a loopback device that stays silent until you route audio through it.
@@ -217,8 +217,10 @@ tab. Use this for an always-on machine.
 
 **Browser microphone (optional).** Open the page and select *use this device's
 mic*. Once the browser has permission, a menu next to the button lets you pick
-which microphone, and the page remembers it. The browser records 12-second
-clips and posts them to `POST /api/match`.
+which microphone, and the page remembers it. A live meter under the buttons
+shows what that microphone hears, with a mark holding the loudest of the last
+second, so you can aim a phone without waiting for a clip to be sent. The
+browser records 12-second clips and posts them to `POST /api/match`.
 The server identifies and scrobbles them through the same path, so both inputs
 share one history and one duplicate filter. Use this for a phone or a laptop in
 another room.
@@ -280,7 +282,8 @@ Put `scrobster_token: Bearer your-token-here` in `secrets.yaml`.
 
 ## Troubleshooting
 
-**Every cycle returns no match.** Read `input <n> dBFS` on the web page.
+**Every cycle returns no match.** Read `input <n> dBFS` on the web page, which
+is the room microphone. The browser microphone has its own live meter.
 
 - Near -91 dB: the device is silent. Pick a different `AUDIO_DEVICE`.
 - Near -20 dB but still no match: the microphone hears the music, but the sound

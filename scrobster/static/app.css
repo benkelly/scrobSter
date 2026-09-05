@@ -145,6 +145,16 @@ nav button:focus-visible { outline-offset: -2px; border-radius: 4px; }
 .meter.quiet .fill { background: var(--warn); }
 .meter.silent .fill { background: var(--err); }
 
+/* The live meter follows the microphone frame by frame, so the bar must not
+   ease towards each new value. The peak mark holds the loudest of the last
+   second, which is what makes a quiet room readable at a glance. */
+.meter.live { margin-top: .75rem; font-size: .8rem; color: var(--muted); }
+.meter.live .bar { position: relative; }
+.meter.live .fill { transition: background-color .3s; }
+.meter.live .peak { position: absolute; top: 0; bottom: 0; width: 2px; left: 0;
+                    background: var(--text); opacity: .55; }
+.meter.live.silent .peak { opacity: 0; }
+
 .note { margin: .75rem 0 0; font-size: .8rem; color: var(--muted); }
 .note:empty { display: none; }
 
