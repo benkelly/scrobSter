@@ -452,20 +452,25 @@ function startMicMeter(stream) {
   let level = SILENT_DB, hold = SILENT_DB, holdAt = 0, wroteAt = 0;
   el.classList.remove("hidden");
 
+  const HOLD_MS = 1000;
   const tick = now => {
     if (!micNode) return;
-    micNode.getFloatTimeDomainData(buf);
+    // A reader that throws would otherwise leave the last bar on screen
+    // looking live, which is the one thing a meter must never do.
+    try { micNode.getFloatTimeDomainData(buf); }
+    catch { stopMicMeter(); return; }
     let peak = 0;
     for (const v of buf) { const a = Math.abs(v); if (a > peak) peak = a; }
     const db = peak > 0 ? Math.max(SILENT_DB, 20 * Math.log10(peak)) : SILENT_DB;
     // Rise at once, fall slowly: a beat registers, and the bar does not flicker
     // between the frames inside one.
     level = db > level ? db : Math.max(db, level - 0.6);
-    if (db >= hold || now - holdAt > 1200) { hold = db; holdAt = now; }
+    if (db >= hold || now - holdAt > HOLD_MS) { hold = db; holdAt = now; }
 
     el.className = "meter live" + meterClass(level);
     fill.style.width = meterPct(level).toFixed(1) + "%";
-    mark.style.left = `calc(${Math.min(meterPct(hold), 100).toFixed(1)}% - 2px)`;
+    mark.style.left =
+      `clamp(0px, calc(${meterPct(hold).toFixed(1)}% - 1px), calc(100% - 2px))`;
     // The number is for reading, not for animating.
     if (now - wroteAt > 200) { out.textContent = level.toFixed(0); wroteAt = now; }
     micRaf = requestAnimationFrame(tick);
