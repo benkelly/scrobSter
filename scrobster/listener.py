@@ -42,8 +42,9 @@ MIN_REPEAT_GAP_SECONDS = 30
 # A "now playing" mark expires after a few minutes, so refresh it while the same
 # track keeps matching.
 NOW_PLAYING_REFRESH_SECONDS = 120
-# Forget a scrobbled play after this long. It has to outlast one unbroken play of
-# the longest track, because the play is only recorded when it is scrobbled.
+# Remember a scrobbled play this long past the cooldown. It has to outlast one
+# unbroken play of the longest track, because a play is recorded only when it is
+# scrobbled, not each time it matches.
 PLAY_MEMORY_SECONDS = 24 * 3600
 
 
@@ -97,13 +98,15 @@ def should_scrobble(key, now, offset, last_plays, fallback_cooldown_s) -> bool:
     return offset < expected - REPEAT_TOLERANCE_SECONDS
 
 
-def forget_old_plays(last_plays, now, keep_s):
+def forget_old_plays(last_plays, now, fallback_cooldown_s):
     """Drop plays too old for should_scrobble() to answer no, so the duplicate
     filter does not keep every track ever heard until a restart.
 
-    `keep_s` must be at least the fallback cooldown, or a track with no offset
-    would scrobble again too soon.
+    Takes the same cooldown as should_scrobble(). Adding a day rather than taking
+    the longer of the two also covers a match judged with an earlier `now`,
+    while a browser clip prunes during its network calls.
     """
+    keep_s = fallback_cooldown_s + PLAY_MEMORY_SECONDS
     for key in [k for k, (ts, _) in last_plays.items() if now - ts >= keep_s]:
         del last_plays[key]
 
@@ -384,8 +387,7 @@ class Listener:
         now = int(time.time())
         self.last_match = {**info, "ts": now, "source": source}
         self._last_match_at = now
-        forget_old_plays(self._last_plays, now,
-                         max(PLAY_MEMORY_SECONDS, config.RESCROBBLE_MINUTES * 60))
+        forget_old_plays(self._last_plays, now, config.RESCROBBLE_MINUTES * 60)
         match_id = None  # written once, and only when somebody scrobbles
 
         for user in users:

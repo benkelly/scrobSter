@@ -58,15 +58,16 @@ def main():
     assert should_scrobble("c", 1000 + cooldown, None, noff, cooldown), "fallback cooldown"
 
     # Old plays are forgotten, but only once forgetting cannot change the answer.
-    keep = max(PLAY_MEMORY_SECONDS, cooldown)
-    plays = {"old": (1000, 50), "none": (1000, None), "new": (1000 + keep, 10)}
-    now = 1000 + keep
+    now = 1000 + cooldown + PLAY_MEMORY_SECONDS
+    plays = {"old": (1000, 50), "none": (1000, None),
+             # one unbroken play that has outlasted the cooldown and is still going
+             "long": (now - cooldown - 600, 30)}
     before = {k: should_scrobble(k, now, 60, plays, cooldown) for k in ("old", "none")}
-    forget_old_plays(plays, now, keep)
-    assert list(plays) == ["new"], plays
+    forget_old_plays(plays, now, cooldown)
+    assert list(plays) == ["long"], plays
     assert before == {"old": True, "none": True}, "the dropped plays had already expired"
-    forget_old_plays(plays, now + keep - 1, keep)
-    assert "new" in plays, "a play inside the window is kept"
+    assert not should_scrobble("long", now, 30 + cooldown + 600, plays, cooldown), \
+        "a play longer than the cooldown is still one play"
 
     assert parse_track(None) is None
     assert parse_track({}) is None
@@ -291,6 +292,11 @@ def check_cleanup():
             assert db.delete_orphaned_matches() == 0, "nothing to remove yet"
 
             accounts.delete_user(b["id"])
+            with sqlite3.connect(path) as c:
+                plan = " ".join(r[-1] for r in c.execute(
+                    "EXPLAIN QUERY PLAN DELETE FROM matches WHERE id NOT IN"
+                    " (SELECT match_id FROM scrobbles)"))
+            assert "idx_scrobbles_match" in plan, "the startup delete must not scan"
             assert db.delete_orphaned_matches() == 1, "bob's own match goes"
             assert [m["title"] for m in db.recent(a["id"])] == ["Shared"], \
                 "a match somebody still has stays"
@@ -306,7 +312,9 @@ def check_client_cache():
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
-    real, scrobble.pylast.LibreFMNetwork = scrobble.pylast.LibreFMNetwork, Fake
+    pylast = scrobble.pylast
+    real = pylast.LibreFMNetwork, pylast.LastFMNetwork
+    pylast.LibreFMNetwork = pylast.LastFMNetwork = Fake
     scrobble._networks.clear()
     try:
         first = scrobble._pylast_network("librefm", {"username": "u", "password_hash": "a"})
@@ -316,8 +324,17 @@ def check_client_cache():
         assert changed is not first and changed.kwargs["password_hash"] == "b", \
             "a new password signs in again"
         assert len(scrobble._networks) == 1, "one client per account"
+
+        # Two people on one Last.fm account, one connected in the browser and one
+        # with a password, must not keep rebuilding each other's client.
+        browser = {"username": "bob", "session_key": "sk"}
+        password = {"username": "bob", "password_hash": "h"}
+        a = scrobble._pylast_network("lastfm", browser)
+        b = scrobble._pylast_network("lastfm", password)
+        assert scrobble._pylast_network("lastfm", browser) is a
+        assert scrobble._pylast_network("lastfm", password) is b
     finally:
-        scrobble.pylast.LibreFMNetwork = real
+        pylast.LibreFMNetwork, pylast.LastFMNetwork = real
         scrobble._networks.clear()
 
 
