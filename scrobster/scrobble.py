@@ -17,7 +17,7 @@ import pylast
 from . import config
 
 log = logging.getLogger("scrobster")
-_networks = {}  # (service, cache key) -> pylast network
+_networks = {}  # (service, account) -> (secret it signed in with, pylast network)
 
 LISTENBRAINZ_DEFAULT_URL = "https://api.listenbrainz.org"
 
@@ -87,10 +87,14 @@ async def listenbrainz_username(url, token) -> str | None:
 
 
 def _pylast_network(service, data):
-    key = (service, data.get("session_key") or data.get("username"))
-    if key not in _networks:
+    """One client per account. A new password or session key replaces it, otherwise
+    the old secret would keep being sent until a restart."""
+    key = (service, data.get("username") or data.get("session_key"))
+    secret = (data.get("session_key"), _password_hash(data))
+    cached = _networks.get(key)
+    if cached is None or cached[0] != secret:
         if service == "lastfm":
-            _networks[key] = pylast.LastFMNetwork(
+            network = pylast.LastFMNetwork(
                 api_key=config.LASTFM_API_KEY,
                 api_secret=config.LASTFM_API_SECRET,
                 session_key=data.get("session_key") or "",
@@ -98,11 +102,12 @@ def _pylast_network(service, data):
                 password_hash=None if data.get("session_key") else _password_hash(data),
             )
         else:
-            _networks[key] = pylast.LibreFMNetwork(
+            network = pylast.LibreFMNetwork(
                 username=data.get("username"),
                 password_hash=_password_hash(data),
             )
-    return _networks[key]
+        cached = _networks[key] = (secret, network)
+    return cached[1]
 
 
 def _pylast_scrobble(service, data, artist, title, album, ts):

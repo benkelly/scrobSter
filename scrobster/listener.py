@@ -42,6 +42,9 @@ MIN_REPEAT_GAP_SECONDS = 30
 # A "now playing" mark expires after a few minutes, so refresh it while the same
 # track keeps matching.
 NOW_PLAYING_REFRESH_SECONDS = 120
+# Forget a scrobbled play after this long. It has to outlast one unbroken play of
+# the longest track, because the play is only recorded when it is scrobbled.
+PLAY_MEMORY_SECONDS = 24 * 3600
 
 
 def should_clear(now, last_match_at, now_playing, stop_after_s) -> bool:
@@ -92,6 +95,17 @@ def should_scrobble(key, now, offset, last_plays, fallback_cooldown_s) -> bool:
     # Where the track would be now if it never stopped playing.
     expected = prev_offset + elapsed
     return offset < expected - REPEAT_TOLERANCE_SECONDS
+
+
+def forget_old_plays(last_plays, now, keep_s):
+    """Drop plays too old for should_scrobble() to answer no, so the duplicate
+    filter does not keep every track ever heard until a restart.
+
+    `keep_s` must be at least the fallback cooldown, or a track with no offset
+    would scrobble again too soon.
+    """
+    for key in [k for k, (ts, _) in last_plays.items() if now - ts >= keep_s]:
+        del last_plays[key]
 
 
 def peak_dbfs(wav: bytes) -> float:
@@ -370,6 +384,8 @@ class Listener:
         now = int(time.time())
         self.last_match = {**info, "ts": now, "source": source}
         self._last_match_at = now
+        forget_old_plays(self._last_plays, now,
+                         max(PLAY_MEMORY_SECONDS, config.RESCROBBLE_MINUTES * 60))
         match_id = None  # written once, and only when somebody scrobbles
 
         for user in users:

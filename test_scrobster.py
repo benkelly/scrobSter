@@ -11,6 +11,7 @@ from scrobster.config import _load_options_json
 
 from scrobster.accounts import merge_credential, normalise_credential
 from scrobster.listener import (MAX_SEGMENT_SECONDS, NOW_PLAYING_REFRESH_SECONDS,
+                                PLAY_MEMORY_SECONDS, forget_old_plays,
                                 parse_device_list, parse_proc_asound_pcm, parse_track,
                                 peak_dbfs, segment_seconds, should_announce,
                                 should_clear, should_scrobble)
@@ -55,6 +56,17 @@ def main():
     noff = {"c": (1000, None)}
     assert not should_scrobble("c", 1000 + cooldown - 1, None, noff, cooldown)
     assert should_scrobble("c", 1000 + cooldown, None, noff, cooldown), "fallback cooldown"
+
+    # Old plays are forgotten, but only once forgetting cannot change the answer.
+    keep = max(PLAY_MEMORY_SECONDS, cooldown)
+    plays = {"old": (1000, 50), "none": (1000, None), "new": (1000 + keep, 10)}
+    now = 1000 + keep
+    before = {k: should_scrobble(k, now, 60, plays, cooldown) for k in ("old", "none")}
+    forget_old_plays(plays, now, keep)
+    assert list(plays) == ["new"], plays
+    assert before == {"old": True, "none": True}, "the dropped plays had already expired"
+    forget_old_plays(plays, now + keep - 1, keep)
+    assert "new" in plays, "a play inside the window is kept"
 
     assert parse_track(None) is None
     assert parse_track({}) is None
@@ -166,6 +178,8 @@ def main():
 
     check_accounts()
     check_migration()
+    check_cleanup()
+    check_client_cache()
     print("ok")
 
 
@@ -239,6 +253,72 @@ def check_migration():
                 config.ADMIN_USERNAME, config.ADMIN_PASSWORD = previous_name, previous_pw
         finally:
             config.DB_PATH = previous
+
+
+def check_cleanup():
+    """Expired sessions and matches nobody scrobbled are deleted, and nothing else."""
+    import sqlite3
+    import time
+    from scrobster import accounts, config, db
+
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "clean.db")
+        previous = config.DB_PATH
+        config.DB_PATH = path
+        try:
+            db.init()
+            a = accounts.create_user("alice", "password123", is_admin=True)
+            b = accounts.create_user("bob", "password123")
+
+            # A session past SESSION_DAYS is deleted by the next sign-in.
+            expired = int(time.time()) - accounts.SESSION_DAYS * 86400 - 1
+            with sqlite3.connect(path) as c:
+                c.execute("INSERT INTO sessions VALUES('stale', ?, ?, ?)",
+                          (a["id"], expired, expired))
+            kept = accounts.start_session(a["id"])
+            fresh = accounts.start_session(b["id"])
+            with sqlite3.connect(path) as c:
+                tokens = {r[0] for r in c.execute("SELECT token FROM sessions")}
+            assert tokens == {kept, fresh}, tokens
+            assert accounts.session_user(kept)["id"] == a["id"], "a live session survives"
+
+            # One match shared by both users, one that only bob scrobbled.
+            shared = db.add_match(100, "A", "Shared", None, "k1", None, "server")
+            db.add_scrobbles(shared, a["id"], {"listenbrainz": "ok"})
+            db.add_scrobbles(shared, b["id"], {"listenbrainz": "ok"})
+            own = db.add_match(200, "A", "Bob's", None, "k2", None, "server")
+            db.add_scrobbles(own, b["id"], {"listenbrainz": "ok"})
+            assert db.delete_orphaned_matches() == 0, "nothing to remove yet"
+
+            accounts.delete_user(b["id"])
+            assert db.delete_orphaned_matches() == 1, "bob's own match goes"
+            assert [m["title"] for m in db.recent(a["id"])] == ["Shared"], \
+                "a match somebody still has stays"
+        finally:
+            config.DB_PATH = previous
+
+
+def check_client_cache():
+    """A new Libre.fm password replaces the cached client instead of being ignored."""
+    from scrobster import scrobble
+
+    class Fake:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    real, scrobble.pylast.LibreFMNetwork = scrobble.pylast.LibreFMNetwork, Fake
+    scrobble._networks.clear()
+    try:
+        first = scrobble._pylast_network("librefm", {"username": "u", "password_hash": "a"})
+        again = scrobble._pylast_network("librefm", {"username": "u", "password_hash": "a"})
+        assert again is first, "the same secret reuses the client"
+        changed = scrobble._pylast_network("librefm", {"username": "u", "password_hash": "b"})
+        assert changed is not first and changed.kwargs["password_hash"] == "b", \
+            "a new password signs in again"
+        assert len(scrobble._networks) == 1, "one client per account"
+    finally:
+        scrobble.pylast.LibreFMNetwork = real
+        scrobble._networks.clear()
 
 
 if __name__ == "__main__":

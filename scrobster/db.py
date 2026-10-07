@@ -160,6 +160,19 @@ def add_scrobbles(match_id, user_id, results: dict):
         )
 
 
+def delete_orphaned_matches() -> int:
+    """Delete matches no scrobble points to, which a deleted user leaves behind.
+    History is read through scrobbles, so nobody can see these.
+
+    Call it before the listener starts. A match shared by several users is
+    written before the second user's scrobbles, so deleting the first user
+    mid-cycle would briefly make it look orphaned.
+    """
+    with _conn() as c:
+        return c.execute("DELETE FROM matches WHERE id NOT IN"
+                         " (SELECT match_id FROM scrobbles)").rowcount
+
+
 def recent(user_id, limit=50):
     """History for one user: the matches they scrobbled, with the per-service result."""
     with _conn() as c:
