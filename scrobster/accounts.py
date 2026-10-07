@@ -148,6 +148,10 @@ def start_session(user_id) -> str:
     token = secrets.token_urlsafe(32)
     now = int(time.time())
     with db._conn() as c:
+        # session_user() already refuses these. Deleting them at each sign-in
+        # keeps the table to the sessions that still work.
+        c.execute("DELETE FROM sessions WHERE created_at < ?",
+                  (now - SESSION_DAYS * 86400,))
         c.execute("INSERT INTO sessions(token, user_id, created_at, last_seen)"
                   " VALUES(?,?,?,?)", (token, user_id, now, now))
     return token

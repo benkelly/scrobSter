@@ -35,6 +35,9 @@ async def _lifespan(app):
     db.init()
     accounts.ensure_first_user()
     accounts.sync_admin_password()
+    removed = db.delete_orphaned_matches()
+    if removed:
+        log.info("Removed %d matches that no account scrobbled.", removed)
     # A device chosen in Settings outranks the environment, see /api/audio.
     config.set_audio(db.get_setting("audio_backend"), db.get_setting("audio_device"))
     if config.LISTEN_ON_START:
