@@ -133,11 +133,13 @@ async def update_me(body: dict, user: dict = Depends(require_user)):
 
 
 @app.post("/api/me/password")
-async def change_password(body: dict, user: dict = Depends(require_user)):
+async def change_password(request: Request, body: dict, user: dict = Depends(require_user)):
     if not accounts.verify_password(str(body.get("current", "")), user["password_hash"]):
         raise HTTPException(403, "the current password is wrong")
     try:
-        accounts.update_user(user["id"], password=str(body.get("password", "")))
+        # Every other session ends; this one stays signed in.
+        accounts.update_user(user["id"], password=str(body.get("password", "")),
+                             keep_session=request.cookies.get(COOKIE))
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {"ok": True}
@@ -243,7 +245,7 @@ async def status(user: dict = Depends(require_user)):
         "version": __version__,
         "listening": listener.listening,
         "started_at": listener.started_at,
-        "last_match": listener.last_match,
+        "last_match": listener.last_match_for(user["id"]),
         "last_error": listener.last_error,
         "level_db": listener.last_level_db,
         "attempts": listener.attempts,
@@ -383,6 +385,9 @@ async def edit_user(user_id: int, body: dict, admin: dict = Depends(require_admi
         raise HTTPException(400, "use the password form to change your own password")
     if accounts.get_user(user_id) is None:
         raise HTTPException(404, "no such account")
+    if body.get("is_admin") is not None and not body["is_admin"] \
+            and accounts.is_last_admin(user_id):
+        raise HTTPException(400, "keep at least one administrator")
     try:
         changed = accounts.update_user(
             user_id, password=body.get("password"),
@@ -423,7 +428,11 @@ async def index():
 
 
 def main():
-    uvicorn.run(app, host="0.0.0.0", port=config.PORT)
+    # proxy_headers=False: uvicorn otherwise takes the client address from
+    # X-Forwarded-For when the peer is local, so a reverse proxy on the same
+    # host that passes the header through would let anyone claim the ingress
+    # address, and with it the owner's account.
+    uvicorn.run(app, host="0.0.0.0", port=config.PORT, proxy_headers=False)
 
 
 if __name__ == "__main__":

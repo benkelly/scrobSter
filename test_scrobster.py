@@ -181,6 +181,7 @@ def main():
     check_migration()
     check_cleanup()
     check_client_cache()
+    check_privacy()
     print("ok")
 
 
@@ -336,6 +337,80 @@ def check_client_cache():
     finally:
         pylast.LibreFMNetwork, pylast.LastFMNetwork = real
         scrobble._networks.clear()
+
+
+def check_privacy():
+    """A browser clip stays with its owner, a new password ends other sessions,
+    the last administrator stays one, and X-Forwarded-For is never trusted."""
+    import asyncio
+    from fastapi import HTTPException
+    from scrobster import accounts, app, config, db, listener as listener_mod
+
+    with tempfile.TemporaryDirectory() as d:
+        previous = config.DB_PATH
+        config.DB_PATH = os.path.join(d, "privacy.db")
+        try:
+            db.init()
+            alice = accounts.create_user("alice", "password123", is_admin=True)
+            bob = accounts.create_user("bob", "password123")
+
+            here = accounts.start_session(alice["id"])
+            elsewhere = accounts.start_session(alice["id"])
+            accounts.update_user(alice["id"], password="new-password", keep_session=here)
+            assert accounts.session_user(here)["id"] == alice["id"], "this session stays"
+            assert accounts.session_user(elsewhere) is None, "every other session ends"
+            other = accounts.start_session(bob["id"])
+            accounts.update_user(bob["id"], password="reset-by-admin")
+            assert accounts.session_user(other) is None, "an admin reset ends them all"
+
+            async def edit(user_id, body):
+                return await app.edit_user(user_id, body, admin=accounts.get_user(alice["id"]))
+            try:
+                asyncio.run(edit(alice["id"], {"is_admin": False}))
+                raise AssertionError("the last administrator was demoted")
+            except HTTPException as e:
+                assert e.status_code == 400, e
+            asyncio.run(edit(bob["id"], {"is_admin": True}))
+            assert not asyncio.run(edit(alice["id"], {"is_admin": False}))["is_admin"], \
+                "with another administrator, stepping down is fine"
+
+            # Neither user has a service, so nothing is sent anywhere.
+            room = listener_mod.Listener()
+            info = {"track_key": "k", "title": "Private", "artist": "A", "album": None,
+                    "art_url": None, "offset": None}
+            asyncio.run(room._on_match(info, "browser", [bob]))
+            assert room.last_match_for(bob["id"])["title"] == "Private", "bob sees his clip"
+            assert room.last_match_for(alice["id"]) is None, "alice does not"
+            asyncio.run(room._on_match({**info, "title": "Radio"}, "server", []))
+            assert room.last_match_for(alice["id"])["title"] == "Radio", "the room is shared"
+
+            # No marks, nothing to clear, and nothing logged every cycle.
+            calls = []
+            real = listener_mod.scrobble.clear_now_playing_all
+            async def record(credentials):
+                calls.append(credentials)
+            listener_mod.scrobble.clear_now_playing_all = record
+            try:
+                asyncio.run(room._clear_if_stopped())
+                assert calls == [], "no mark, nothing to clear"
+                room._now_playing = {bob["id"]: ("k", 0), alice["id"]: ("r", 0)}
+                room._last_match_at = {bob["id"]: int(__import__("time").time()),
+                                       alice["id"]: 0}
+                asyncio.run(room._clear_if_stopped())
+                assert list(room._now_playing) == [bob["id"]], "only the stale mark goes"
+            finally:
+                listener_mod.scrobble.clear_now_playing_all = real
+        finally:
+            config.DB_PATH = previous
+
+    seen = {}
+    real_run = app.uvicorn.run
+    app.uvicorn.run = lambda *a, **kw: seen.update(kw)
+    try:
+        app.main()
+    finally:
+        app.uvicorn.run = real_run
+    assert seen.get("proxy_headers") is False, "X-Forwarded-For must not pick the client"
 
 
 if __name__ == "__main__":

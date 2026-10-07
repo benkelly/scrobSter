@@ -289,9 +289,10 @@ class Listener:
         # (user_id, track_key) -> (ts, offset); in memory, a restart forgets
         self._last_plays = {}
         self._now_playing = {}  # user_id -> (track_key, ts) of the last mark
-        self._last_match_at = None  # when audio was last identified
+        self._last_match_at = {}  # user_id -> when their audio was last identified
         self._warned_silent = False
-        self.last_match = None
+        self.last_match = None  # the room microphone's, which everyone may see
+        self.browser_matches = {}  # user_id -> their own last browser clip
         self.last_error = None
         self.last_level_db = None
         self.last_attempt = None
@@ -356,16 +357,30 @@ class Listener:
             elapsed = time.monotonic() - cycle_start
             await asyncio.sleep(max(0, config.MATCH_INTERVAL - elapsed))
 
+    def last_match_for(self, user_id):
+        """The newest match this user may see: the room's, or their own clip.
+        A browser clip belongs to the person who recorded it."""
+        mine = self.browser_matches.get(user_id)
+        if mine and (self.last_match is None or mine["ts"] >= self.last_match["ts"]):
+            return mine
+        return self.last_match
+
     async def _clear_if_stopped(self):
-        """Drop the playing-now mark for every user once the music has stopped."""
-        if not should_clear(int(time.time()), self._last_match_at, self._now_playing,
-                            config.NOW_PLAYING_STOP_SECONDS):
+        """Drop each user's playing-now mark once their music has stopped.
+
+        Per user, because a browser clip keeps only its own user's mark alive.
+        """
+        now = int(time.time())
+        stale = [u for u, mark in list(self._now_playing.items())
+                 if should_clear(now, self._last_match_at.get(u), mark,
+                                 config.NOW_PLAYING_STOP_SECONDS)]
+        if not stale:
             return
         log.info("no match for %ss, clearing the playing-now mark",
                  config.NOW_PLAYING_STOP_SECONDS)
-        for user_id in list(self._now_playing):
+        for user_id in stale:
+            self._now_playing.pop(user_id, None)
             await scrobble.clear_now_playing_all(accounts.get_credentials(user_id))
-        self._now_playing.clear()
 
     async def match_bytes(self, wav: bytes, source: str = "server",
                           users=None) -> dict | None:
@@ -385,8 +400,14 @@ class Listener:
 
     async def _on_match(self, info, source, users):
         now = int(time.time())
-        self.last_match = {**info, "ts": now, "source": source}
-        self._last_match_at = now
+        match = {**info, "ts": now, "source": source}
+        if source == "browser":
+            for user in users:
+                self.browser_matches[user["id"]] = match
+        else:
+            self.last_match = match
+        for user in users:
+            self._last_match_at[user["id"]] = now
         forget_old_plays(self._last_plays, now, config.RESCROBBLE_MINUTES * 60)
         match_id = None  # written once, and only when somebody scrobbles
 
