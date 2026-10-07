@@ -109,7 +109,11 @@ def room_mic_users():
                 c.execute("SELECT * FROM users WHERE room_mic=1").fetchall()]
 
 
-def update_user(user_id, *, room_mic=None, is_admin=None, password=None):
+def update_user(user_id, *, room_mic=None, is_admin=None, password=None,
+                keep_session=None):
+    """A new password ends every session of that user except `keep_session`,
+    so changing it, or recovering it with ADMIN_PASSWORD, locks out whoever
+    else was signed in."""
     sets, values = [], []
     if room_mic is not None:
         sets.append("room_mic=?")
@@ -127,7 +131,16 @@ def update_user(user_id, *, room_mic=None, is_admin=None, password=None):
     values.append(user_id)
     with db._conn() as c:
         c.execute(f"UPDATE users SET {', '.join(sets)} WHERE id=?", values)
+        if password is not None:
+            c.execute("DELETE FROM sessions WHERE user_id=? AND token IS NOT ?",
+                      (user_id, keep_session))
     return get_user(user_id)
+
+
+def is_last_admin(user_id) -> bool:
+    with db._conn() as c:
+        return c.execute("SELECT COUNT(*) FROM users WHERE is_admin=1 AND id!=?",
+                         (user_id,)).fetchone()[0] == 0
 
 
 def delete_user(user_id):
