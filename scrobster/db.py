@@ -67,6 +67,8 @@ def _create_schema(c):
             status TEXT NOT NULL);
 
         CREATE INDEX IF NOT EXISTS idx_scrobbles_user ON scrobbles(user_id, match_id);
+        -- Deleting a match looks up its scrobbles, see delete_orphaned_matches().
+        CREATE INDEX IF NOT EXISTS idx_scrobbles_match ON scrobbles(match_id);
         CREATE INDEX IF NOT EXISTS idx_matches_ts ON matches(ts DESC);
 
         -- Instance-wide choices made in the web page, such as the audio device.

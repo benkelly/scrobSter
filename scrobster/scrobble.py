@@ -87,9 +87,14 @@ async def listenbrainz_username(url, token) -> str | None:
 
 
 def _pylast_network(service, data):
-    """One client per account. A new password or session key replaces it, otherwise
-    the old secret would keep being sent until a restart."""
-    key = (service, data.get("username") or data.get("session_key"))
+    """One client per account and way of signing in. A new password or session key
+    replaces it, otherwise the old secret would keep being sent until a restart.
+
+    Session-key and password logins to one account get separate clients, because
+    a password client signs in over the network each time it is built.
+    """
+    key = (service, data.get("username") or data.get("session_key"),
+           bool(data.get("session_key")))
     secret = (data.get("session_key"), _password_hash(data))
     cached = _networks.get(key)
     if cached is None or cached[0] != secret:
