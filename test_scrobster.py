@@ -182,6 +182,7 @@ def main():
     check_cleanup()
     check_client_cache()
     check_privacy()
+    check_keep_listening()
     print("ok")
 
 
@@ -411,6 +412,98 @@ def check_privacy():
     finally:
         app.uvicorn.run = real_run
     assert seen.get("proxy_headers") is False, "X-Forwarded-For must not pick the client"
+
+
+def check_keep_listening():
+    """A stuck ffmpeg, a rate-limiting Shazam or a dead service must not stop
+    the capture loop for long."""
+    import asyncio
+    import time
+    from aiohttp import web
+    from scrobster import listener, scrobble
+
+    assert [listener.rate_limit_wait(w) for w in (0, 60, 400, 600)] == [60, 120, 600, 600]
+    assert isinstance(listener.Listener()._shazam.http_client, listener.ShazamClient), \
+        "shazamio's own client retries a 429 for twelve minutes"
+
+    async def shazam_says_429():
+        hits = []
+        async def handler(request):
+            hits.append(1)
+            return web.Response(status=429)
+        app = web.Application()
+        app.router.add_route("*", "/", handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        try:
+            await listener.ShazamClient().request("POST", f"http://127.0.0.1:{port}/", json={})
+            raise AssertionError("a 429 must raise")
+        except listener.RateLimited:
+            pass
+        finally:
+            await runner.cleanup()
+        return hits
+    assert asyncio.run(shazam_says_429()) == [1], "asked once, not retried"
+
+    # An ffmpeg that never finishes, standing in for an input that sends no audio.
+    with tempfile.TemporaryDirectory() as d:
+        pidfile = os.path.join(d, "pid")
+        fake = os.path.join(d, "ffmpeg")
+        with open(fake, "w") as fh:
+            fh.write(f"#!/bin/sh\necho $$ > {pidfile}\nexec sleep 60\n")
+        os.chmod(fake, 0o755)
+        path, grace = os.environ["PATH"], listener.FFMPEG_GRACE_SECONDS
+        os.environ["PATH"] = d + os.pathsep + path
+        listener.FFMPEG_GRACE_SECONDS = 1
+
+        def gone():
+            try:
+                os.kill(int(open(pidfile).read()), 0)
+            except ProcessLookupError:
+                return True
+            return False
+        try:
+            start = time.monotonic()
+            try:
+                asyncio.run(listener.capture_chunk(seconds=1))
+                raise AssertionError("a stuck ffmpeg must time out")
+            except RuntimeError as e:
+                assert "gave nothing" in str(e), e
+            assert time.monotonic() - start < 10
+            assert gone(), "a timed-out ffmpeg is killed"
+
+            async def cancel_mid_capture():
+                task = asyncio.create_task(listener.capture_chunk(seconds=30))
+                while not os.path.exists(pidfile) or not open(pidfile).read().strip():
+                    await asyncio.sleep(0.05)
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            os.remove(pidfile)
+            asyncio.run(cancel_mid_capture())
+            assert gone(), "stopping the listener frees the device"
+        finally:
+            os.environ["PATH"], listener.FFMPEG_GRACE_SECONDS = path, grace
+
+    # Services run together, and a timeout still says what it was.
+    async def each():
+        async def handle(service, data):
+            await asyncio.sleep(0.5)
+            if service == "maloja":
+                raise asyncio.TimeoutError()
+        start = time.monotonic()
+        out = await scrobble._each_service(
+            {"listenbrainz": {"token": "t"}, "maloja": {"url": "u", "key": "k"}},
+            handle, lambda s, e: None)
+        return out, time.monotonic() - start
+    results, took = asyncio.run(each())
+    assert results == {"listenbrainz": "ok", "maloja": "error: TimeoutError"}, results
+    assert took < 0.9, f"services ran one after another ({took:.2f}s)"
 
 
 if __name__ == "__main__":

@@ -19,8 +19,8 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from . import accounts, config, db, scrobble
 from . import __version__
-from .listener import (SILENT_DBFS, Listener, decode_to_wav, list_devices, peak_dbfs,
-                       probe_level)
+from .listener import (SILENT_DBFS, Listener, RateLimited, decode_to_wav, list_devices,
+                       peak_dbfs, probe_level)
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 COOKIE = "scrobster_session"
@@ -289,8 +289,14 @@ async def match(request: Request, user: dict = Depends(require_user)):
         wav = await decode_to_wav(data)
     except ValueError as e:
         raise HTTPException(415, str(e))
-    return {"match": await listener.match_bytes(wav, source="browser", users=[user]),
-            "level_db": peak_dbfs(wav)}
+    try:
+        found = await listener.match_bytes(wav, source="browser", users=[user])
+    except RateLimited as e:
+        raise HTTPException(429, str(e))
+    except Exception as e:
+        log.warning("browser clip failed: %s", e)
+        raise HTTPException(502, f"recognition failed: {str(e) or type(e).__name__}")
+    return {"match": found, "level_db": peak_dbfs(wav)}
 
 
 # --- the audio input, for an administrator -----------------------------------

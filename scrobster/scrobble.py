@@ -155,16 +155,24 @@ async def _lb_clear(base_url, token):
             r.raise_for_status()
 
 
+def _error(e) -> str:
+    # A timeout's message is empty, which used to leave just "error: ".
+    return f"error: {str(e) or type(e).__name__}"[:200]
+
+
 async def _each_service(credentials, handle, on_error) -> dict:
+    """Run every service at once, so one that hangs, such as a Maloja box that is
+    switched off, does not hold up the others and the capture loop behind them."""
+    services = enabled_services(credentials)
+    outcomes = await asyncio.gather(*(handle(s, credentials[s]) for s in services),
+                                    return_exceptions=True)
     results = {}
-    for service in enabled_services(credentials):
-        data = credentials[service]
-        try:
-            await handle(service, data)
+    for service, outcome in zip(services, outcomes):
+        if isinstance(outcome, BaseException):
+            on_error(service, outcome)
+            results[service] = _error(outcome)
+        else:
             results[service] = "ok"
-        except Exception as e:
-            on_error(service, e)
-            results[service] = f"error: {e}"[:200]
     return results
 
 
@@ -216,5 +224,5 @@ async def clear_now_playing_all(credentials) -> dict:
             results[service] = "cleared"
         except Exception as e:
             log.debug("clearing now playing on %s failed: %s", service, e)
-            results[service] = f"error: {e}"[:200]
+            results[service] = _error(e)
     return results
