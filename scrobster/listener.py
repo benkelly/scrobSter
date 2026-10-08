@@ -16,7 +16,9 @@ import tempfile
 import time
 import wave
 
+import aiohttp
 from shazamio import Shazam
+from shazamio.interfaces.client import HTTPClientInterface
 
 from . import accounts, config, db, scrobble
 
@@ -27,6 +29,39 @@ log = logging.getLogger("scrobster")
 MAX_SEGMENT_SECONDS = 14
 # Below this peak there is nothing to identify, so skip the request and save quota.
 SILENT_DBFS = -70.0
+# Give up on one Shazam request after this long.
+SHAZAM_TIMEOUT_SECONDS = 30
+# ffmpeg gets this long beyond the audio it records before it counts as stuck.
+FFMPEG_GRACE_SECONDS = 20
+
+
+class RateLimited(RuntimeError):
+    """Shazam answered 429 Too Many Requests."""
+
+
+class ShazamClient(HTTPClientInterface):
+    """Ask Shazam once, with a timeout.
+
+    shazamio's own client retries a 429 twenty times over about twelve minutes.
+    That stalls capture and browser clips the whole time, makes the rate limit
+    worse, and ends in "Failed to decode json". The capture loop backs off
+    instead, see rate_limit_wait().
+    """
+
+    async def request(self, method, url, *args, **kwargs):
+        timeout = aiohttp.ClientTimeout(total=SHAZAM_TIMEOUT_SECONDS)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.request(method, url, **kwargs) as r:
+                if r.status == 429:
+                    raise RateLimited("Shazam is limiting requests from this address")
+                if r.status >= 400:
+                    raise RuntimeError(f"Shazam answered HTTP {r.status}")
+                return await r.json(content_type=None)
+
+
+def rate_limit_wait(previous: float) -> float:
+    """Seconds to wait after a 429: a minute, doubling to ten while it lasts."""
+    return min(max(previous * 2, 60), 600)
 
 
 def segment_seconds(chunk_seconds: int) -> int:
@@ -207,6 +242,7 @@ async def _run(*argv, timeout=10) -> str:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout)
     except asyncio.TimeoutError:
         proc.kill()
+        await proc.wait()
         return ""
     return out.decode(errors="replace")
 
@@ -230,6 +266,30 @@ async def list_devices(backend: str) -> list[dict]:
     return found
 
 
+async def _ffmpeg(*argv, data=None, timeout):
+    """Run ffmpeg and return (returncode, stderr).
+
+    An input that opens but never delivers audio would otherwise block for good.
+    A cancelled capture would leave ffmpeg holding the device, so it is killed
+    on the way out whatever happened.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-hide_banner", "-loglevel", "error", *argv,
+        stdin=asyncio.subprocess.PIPE if data is not None else asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _, err = await asyncio.wait_for(proc.communicate(data), timeout)
+    except asyncio.TimeoutError:
+        raise RuntimeError(f"ffmpeg gave nothing in {timeout:.0f}s; the input may have"
+                           " stopped sending audio") from None
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+    return proc.returncode, err.decode(errors="replace")
+
+
 async def capture_chunk(seconds=None, backend=None, device=None) -> bytes:
     """Record one chunk. The arguments override the configured device, for a test."""
     # ponytail: one ffmpeg spawn per chunk; self-heals when the device drops.
@@ -237,17 +297,14 @@ async def capture_chunk(seconds=None, backend=None, device=None) -> bytes:
     # ffmpeg cannot seek back to patch them, and the decoder then reads no samples.
     with tempfile.TemporaryDirectory() as tmp:
         path = pathlib.Path(tmp) / "chunk.wav"
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-hide_banner", "-loglevel", "error",
+        seconds = seconds or config.CHUNK_SECONDS
+        code, err = await _ffmpeg(
             "-f", backend or config.AUDIO_BACKEND, "-i", device or config.AUDIO_DEVICE,
-            "-t", str(seconds or config.CHUNK_SECONDS), "-ac", "1", "-ar", "16000",
-            "-y", str(path),
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-        )
-        _, err = await proc.communicate()
+            "-t", str(seconds), "-ac", "1", "-ar", "16000", "-y", str(path),
+            timeout=seconds + FFMPEG_GRACE_SECONDS)
         data = path.read_bytes() if path.exists() else b""
-        if proc.returncode != 0 or not data:
-            raise RuntimeError(f"ffmpeg capture failed: {err.decode(errors='replace')[-300:]}")
+        if code != 0 or not data:
+            raise RuntimeError(f"ffmpeg capture failed: {err[-300:]}")
         return data
 
 
@@ -265,24 +322,21 @@ async def decode_to_wav(data: bytes) -> bytes:
     """
     with tempfile.TemporaryDirectory() as tmp:
         path = pathlib.Path(tmp) / "in.wav"
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-hide_banner", "-loglevel", "error",
+        code, err = await _ffmpeg(
             "-i", "pipe:0", "-t", str(segment_seconds(config.CHUNK_SECONDS)),
             "-ac", "1", "-ar", "16000", "-y", str(path),
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-        )
-        _, err = await proc.communicate(data)
+            data=data, timeout=FFMPEG_GRACE_SECONDS + 10)
         wav = path.read_bytes() if path.exists() else b""
-        if proc.returncode != 0 or not wav:
-            raise ValueError(f"could not decode audio: {err.decode(errors='replace')[-200:]}")
+        if code != 0 or not wav:
+            raise ValueError(f"could not decode audio: {err[-200:]}")
         return wav
 
 
 class Listener:
     def __init__(self):
         self._task = None
-        self._shazam = Shazam(segment_duration_seconds=segment_seconds(config.CHUNK_SECONDS))
+        self._shazam = Shazam(segment_duration_seconds=segment_seconds(config.CHUNK_SECONDS),
+                              http_client=ShazamClient())
         if config.CHUNK_SECONDS > MAX_SEGMENT_SECONDS:
             log.warning("CHUNK_SECONDS=%s, but only %ss is fingerprinted; longer windows"
                         " stop matching", config.CHUNK_SECONDS, MAX_SEGMENT_SECONDS)
@@ -330,6 +384,7 @@ class Listener:
     async def _loop(self):
         log.info("listening: %s %s, one match per %ss",
                  config.AUDIO_BACKEND, config.AUDIO_DEVICE, config.MATCH_INTERVAL)
+        backoff = 0  # seconds, grows while Shazam answers 429
         while True:
             cycle_start = time.monotonic()
             try:
@@ -351,9 +406,16 @@ class Listener:
                 await self._clear_if_stopped()
             except asyncio.CancelledError:
                 raise
+            except RateLimited as e:
+                backoff = rate_limit_wait(backoff)
+                self.last_error = f"{e}; trying again in {backoff:.0f}s"
+                log.warning("%s", self.last_error)
+                await asyncio.sleep(backoff)
+                continue
             except Exception as e:
                 self.last_error = str(e)[:300]
                 log.warning("cycle failed: %s", e)
+            backoff = 0
             elapsed = time.monotonic() - cycle_start
             await asyncio.sleep(max(0, config.MATCH_INTERVAL - elapsed))
 
