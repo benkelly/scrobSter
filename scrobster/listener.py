@@ -20,7 +20,7 @@ import aiohttp
 from shazamio import Shazam
 from shazamio.interfaces.client import HTTPClientInterface
 
-from . import accounts, config, db, scrobble
+from . import accounts, config, db, enrich, scrobble
 
 log = logging.getLogger("scrobster")
 
@@ -176,6 +176,7 @@ def parse_track(result) -> dict | None:
         "artist": track.get("subtitle"),
         "album": album,
         "art_url": (track.get("images") or {}).get("coverart"),
+        "isrc": track.get("isrc"),
         # position inside the track; used to tell a repeat from a continuing play
         "offset": matches[0].get("offset") if matches else None,
     }
@@ -472,18 +473,25 @@ class Listener:
             self._last_match_at[user["id"]] = now
         forget_old_plays(self._last_plays, now, config.RESCROBBLE_MINUTES * 60)
         match_id = None  # written once, and only when somebody scrobbles
+        extra = None  # looked up once, and only for somebody who can receive it
 
         for user in users:
             credentials = accounts.get_credentials(user["id"])
-            if not scrobble.enabled_services(credentials):
+            services = scrobble.enabled_services(credentials)
+            if not services:
                 continue
+            if extra is None and {"listenbrainz", "maloja"} & set(services):
+                extra = await enrich.musicbrainz_ids(info.get("isrc"), info["title"],
+                                                     info["album"])
+                if info.get("isrc"):
+                    extra = {**extra, "isrc": info["isrc"]}
 
             # Show it as playing now, even while the same play continues and no
             # new scrobble is due.
             if should_announce(info["track_key"], now, self._now_playing.get(user["id"])):
                 self._now_playing[user["id"]] = (info["track_key"], now)
                 await scrobble.now_playing_all(credentials, info["artist"],
-                                               info["title"], info["album"])
+                                               info["title"], info["album"], extra)
 
             key = (user["id"], info["track_key"])
             if not should_scrobble(key, now, info.get("offset"), self._last_plays,
@@ -491,7 +499,11 @@ class Listener:
                 continue
             self._last_plays[key] = (now, info.get("offset"))
             results = await scrobble.scrobble_all(credentials, info["artist"],
-                                                  info["title"], info["album"], now)
+                                                  info["title"], info["album"], now,
+                                                  extra)
+            if results.get("maloja") == "ok":
+                enrich.maloja_cover(credentials["maloja"], info["artist"],
+                                    info["title"], info["album"], info["art_url"])
             if match_id is None:
                 match_id = db.add_match(now, info["artist"], info["title"],
                                         info["album"], info["track_key"],

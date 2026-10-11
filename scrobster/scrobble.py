@@ -14,7 +14,7 @@ import logging
 import aiohttp
 import pylast
 
-from . import config
+from . import __version__, config
 
 log = logging.getLogger("scrobster")
 _networks = {}  # (service, account) -> (secret it signed in with, pylast network)
@@ -131,9 +131,15 @@ def _lb_endpoints(service, data):
     return (data.get("url") or LISTENBRAINZ_DEFAULT_URL).rstrip("/"), data["token"]
 
 
-async def _lb_submit(base_url, token, artist, title, album, ts=None):
-    """Submit a listen. With ts=None this marks the track as playing now instead."""
-    meta = {"artist_name": artist, "track_name": title}
+async def _lb_submit(base_url, token, artist, title, album, ts=None, extra=None):
+    """Submit a listen. With ts=None this marks the track as playing now instead.
+
+    extra goes into additional_info, for MusicBrainz IDs and the ISRC.
+    """
+    meta = {"artist_name": artist, "track_name": title,
+            "additional_info": {"submission_client": "scrobSter",
+                                "submission_client_version": __version__,
+                                **(extra or {})}}
     if album:
         meta["release_name"] = album
     listen = {"track_metadata": meta}
@@ -176,23 +182,24 @@ async def _each_service(credentials, handle, on_error) -> dict:
     return results
 
 
-async def scrobble_all(credentials, artist, title, album, ts) -> dict:
+async def scrobble_all(credentials, artist, title, album, ts, extra=None) -> dict:
     """Returns {service: "ok" | "error: ..."}. A failure logs and does not stop
-    the others, and there is no retry queue."""
+    the others, and there is no retry queue. extra reaches ListenBrainz and
+    Maloja only, because the Audioscrobbler protocol has no field for it."""
     async def handle(service, data):
         if service in ("lastfm", "librefm"):
             await asyncio.to_thread(_pylast_scrobble, service, data,
                                     artist, title, album, ts)
         else:
             base, token = _lb_endpoints(service, data)
-            await _lb_submit(base, token, artist, title, album, ts)
+            await _lb_submit(base, token, artist, title, album, ts, extra)
 
     return await _each_service(
         credentials, handle,
         lambda s, e: log.warning("scrobble to %s failed: %s", s, e))
 
 
-async def now_playing_all(credentials, artist, title, album) -> dict:
+async def now_playing_all(credentials, artist, title, album, extra=None) -> dict:
     """Mark the track as playing now. Best effort: the scrobble is the record
     that matters, so a failure only logs at debug level."""
     async def handle(service, data):
@@ -201,7 +208,7 @@ async def now_playing_all(credentials, artist, title, album) -> dict:
                                     artist, title, album)
         else:
             base, token = _lb_endpoints(service, data)
-            await _lb_submit(base, token, artist, title, album)
+            await _lb_submit(base, token, artist, title, album, extra=extra)
 
     return await _each_service(
         credentials, handle,
