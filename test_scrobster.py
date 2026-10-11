@@ -74,11 +74,11 @@ def main():
     assert parse_track({"matches": []}) is None, "no-match response"
     info = parse_track({"matches": [{"offset": 56.98}], "track": {
         "key": "k1", "title": "T", "subtitle": "A",
-        "images": {"coverart": "u"},
+        "images": {"coverart": "u"}, "isrc": "GBAAA0000001",
         "sections": [{"metadata": [{"title": "Album", "text": "Al"}]}],
     }})
     assert info == {"track_key": "k1", "title": "T", "artist": "A", "album": "Al",
-                    "art_url": "u", "offset": 56.98}
+                    "art_url": "u", "isrc": "GBAAA0000001", "offset": 56.98}
     assert parse_track({"track": {"key": "k"}})["offset"] is None, "offset may be absent"
 
     # the device picker reads ffmpeg's listings
@@ -183,6 +183,7 @@ def main():
     check_client_cache()
     check_privacy()
     check_keep_listening()
+    check_enrich()
     print("ok")
 
 
@@ -504,6 +505,118 @@ def check_keep_listening():
     results, took = asyncio.run(each())
     assert results == {"listenbrainz": "ok", "maloja": "error: TimeoutError"}, results
     assert took < 0.9, f"services ran one after another ({took:.2f}s)"
+
+
+def check_enrich():
+    """MusicBrainz IDs for ListenBrainz, and Shazam's cover for Maloja."""
+    import asyncio
+    import base64
+    from aiohttp import web
+    from scrobster import enrich, scrobble
+
+    body = {"recordings": [{"id": "r-live", "title": "Song (Live)"},
+                           {"id": "r1", "title": "Song"}]}
+    assert [r["id"] for r in enrich.recordings_to_try(body, "song")] == ["r1", "r-live"], \
+        "the recording with Shazam's title is tried first"
+    assert enrich.recordings_to_try({}, "Song") == []
+    releases = [{"id": "single", "title": "Song", "status": "Official"},
+                {"id": "bootleg", "title": "Album", "status": "Bootleg"},
+                {"id": "album", "title": "album", "status": "Official"}]
+    assert enrich.album_release(releases, "Album") == "album", \
+        "the official release of Shazam's album"
+    assert enrich.album_release(releases, "Greatest Hits") is None, \
+        "no release is guessed when none has Shazam's album title"
+    assert enrich.album_release(releases, None) is None
+    assert enrich._ids({"id": "r1", "artist-credit": [{"artist": {"id": "a1"}}]},
+                       "album") == {"recording_mbid": "r1", "artist_mbids": ["a1"],
+                                    "release_mbid": "album"}
+    assert asyncio.run(enrich.musicbrainz_ids(None, "Song", "Album")) == {}, \
+        "no ISRC, no lookup"
+
+    assert enrich.is_placeholder(202, None) is None, "Maloja is still looking"
+    assert enrich.is_placeholder(307, "/static/svg/placeholder_album.svg")
+    assert enrich.is_placeholder(307, "https://generative-placeholders.glitch.me/x")
+    assert not enrich.is_placeholder(307, "https://lastfm.freetls.fastly.net/i/u/a.jpg")
+
+    # A fake Maloja that has no picture for one album and has one for another.
+    uploads, picture_asks = [], []
+    cover = b"\xff\xd8 a jpeg"
+
+    async def album_info(request):
+        ids = {"Bare": 1, "Pictured": 2}
+        if request.query.get("albumtitle") not in ids:
+            return web.json_response({"error": "no such album"}, status=404)
+        assert request.query["albumartist"] == "Artist"
+        return web.json_response({"id": ids[request.query["albumtitle"]]})
+
+    async def image(request):
+        picture_asks.append(request.query["album_id"])
+        where = ("/static/svg/placeholder_album.svg" if request.query["album_id"] == "1"
+                 else "https://example.com/real.jpg")
+        return web.Response(status=307, headers={"Location": where})
+
+    async def add_picture(request):
+        uploads.append(await request.json())
+        return web.json_response({"status": "success"})
+
+    async def shazam_cover(request):
+        return web.Response(body=cover, content_type="image/jpeg")
+
+    async def run():
+        app = web.Application()
+        app.add_routes([web.get("/apis/mlj_1/albuminfo", album_info),
+                        web.get("/image", image),
+                        web.post("/apis/mlj_1/addpicture", add_picture),
+                        web.get("/cover.jpg", shazam_cover)])
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        base = f"http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}"
+        maloja = {"url": base + "/", "key": "k"}
+        try:
+            for album in ("Bare", "Bare", "Pictured", "Unknown"):
+                enrich.maloja_cover(maloja, "Artist", "Song", album, base + "/cover.jpg")
+            enrich.maloja_cover(maloja, "Artist", "Song", "Other", None)
+            await asyncio.gather(*enrich._tasks)
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(run())
+    assert picture_asks == ["1", "2"] or picture_asks == ["2", "1"], \
+        f"each album checked once, a repeat and a missing cover skipped: {picture_asks}"
+    assert len(uploads) == 1, f"only the album with no picture gets one: {uploads}"
+    sent = uploads[0]
+    assert sent["key"] == "k" and sent["albumtitle"] == "Bare"
+    assert sent["albumartist"] == ["Artist"]
+    assert sent["b64"] == "data:image/jpeg;base64," + base64.b64encode(cover).decode()
+
+    # The IDs ride along in additional_info, which ListenBrainz and Maloja read.
+    sent = []
+
+    async def submit(request):
+        sent.append(await request.json())
+        return web.json_response({"status": "ok"})
+
+    async def submit_one():
+        app = web.Application()
+        app.add_routes([web.post("/1/submit-listens", submit)])
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        base = f"http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}"
+        try:
+            await scrobble.scrobble_all({"listenbrainz": {"token": "t", "url": base}},
+                                        "A", "T", "Al", 1000,
+                                        {"recording_mbid": "r1", "isrc": "X"})
+        finally:
+            await runner.cleanup()
+
+    asyncio.run(submit_one())
+    info = sent[0]["payload"][0]["track_metadata"]["additional_info"]
+    assert info["recording_mbid"] == "r1" and info["isrc"] == "X"
+    assert info["submission_client"] == "scrobSter"
 
 
 if __name__ == "__main__":

@@ -27,6 +27,25 @@ passages, so a shorter limit would make the mark flicker during a song.
 A web page shows the current match and the history. The JSON API serves mobile
 clients and Home Assistant.
 
+### Cover art and MusicBrainz IDs
+
+Shazam returns a cover and usually an ISRC with each match. scrobSter uses both
+where a service can take them:
+
+- **ListenBrainz and Maloja** receive MusicBrainz IDs in `additional_info`.
+  scrobSter finds them from the ISRC, once per track. ListenBrainz uses the
+  release ID to show that release's cover from the Cover Art Archive. A release
+  ID is sent only when a release title matches Shazam's album, because a wrong
+  release would show the wrong cover.
+- **Maloja** receives Shazam's cover as an uploaded picture, for an album that
+  Maloja shows a placeholder for. It never replaces a picture Maloja already
+  has, and it tries each album once per run.
+- **Last.fm and Libre.fm** receive neither. Their API has no artwork upload, so
+  missing Last.fm art still has to be added by hand on the album page.
+
+All of this is best effort. If MusicBrainz or Maloja fails, the scrobble still
+goes through without it.
+
 Each person has an account and connects their own scrobbling services in
 Settings. The room microphone is shared, so every user chooses whether to
 receive what it hears. A microphone in a browser is different: that listen
