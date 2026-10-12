@@ -49,14 +49,14 @@ All of this is best effort. If MusicBrainz or Maloja fails, the scrobble still
 goes through without it.
 
 Each person has an account and connects their own scrobbling services in
-Settings. A room is shared, so every user chooses, room by room, whether to
-receive what it hears. A microphone in a browser is different: that listen
+Settings. A room is shared, so every user chooses, room by room on the Rooms
+tab, whether to receive what it hears. A microphone in a browser is different: that listen
 belongs to the person who recorded it, and goes only to them.
 
 ## Rooms and cameras
 
-An administrator adds rooms under Settings. Each room has a name, which the
-history and the Listening page show, and one input:
+Rooms have their own tab. An administrator adds rooms there. Each room has a
+name, which the history shows, and one input:
 
 - **A microphone on this server.** Pick a device, or leave the default, which
   is `AUDIO_DEVICE`.
@@ -67,10 +67,10 @@ history and the Listening page show, and one input:
 **Test level** records three seconds and reports the peak, before you save. A
 camera with its audio turned off says so.
 
-Each room runs its own capture loop, and the Listening page shows each room's
-level and what it hears. Every user turns on the rooms they want under
-Settings. A room scrobbles for nobody until then, except for the administrator
-who added it. A song that two rooms hear at once is still one play for
+Each room runs its own capture loop, and the Rooms tab shows each room's level
+and what it hears, live. Every user turns on **scrobble for me** for the rooms
+they want. A room scrobbles for nobody until then, except for the
+administrator who added it. A song that two rooms hear at once is still one play for
 someone who receives both.
 
 Tips for cameras:
@@ -207,7 +207,7 @@ revoke the key in your Last.fm account settings.
 
 ## Find your audio device
 
-The easy way: sign in as an administrator, open Settings, and edit a room, or
+The easy way: sign in as an administrator, open Rooms, and edit a room, or
 add one. The form lists the devices ffmpeg can see, and **Test level** records
 three seconds from the one you pick and reports the peak, so a silent device is
 caught before you choose it. A room's own device outranks `AUDIO_DEVICE`. The
@@ -240,7 +240,7 @@ ffmpeg -i /tmp/t.wav -af volumedetect -f null - 2>&1 | grep mean_volume
 Play music, then read the result. A value near -91 dB is digital silence, and
 that device is the wrong one. A value near -20 dB is good.
 
-The Listening page shows each room's level while it listens, and warns you
+The Rooms tab shows each room's level while it listens, and warns you
 when a room is silent.
 
 Index 0 is not always the microphone. On a Mac with virtual audio software, index
@@ -362,7 +362,7 @@ For a sensor per room, such as "what is playing in the kitchen", use this
 
 ## Troubleshooting
 
-**Every cycle returns no match.** Read the room's level on the Listening page.
+**Every cycle returns no match.** Read the room's level on the Rooms tab.
 The browser microphone has its own live meter.
 
 - Near -91 dB: the device is silent. Pick a different `AUDIO_DEVICE`.

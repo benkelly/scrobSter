@@ -23,6 +23,7 @@
 
   <nav role="tablist" aria-label="Sections">
     <button role="tab" data-view="listen" aria-selected="true" aria-controls="view-listen">Listening</button>
+    <button role="tab" data-view="rooms" aria-selected="false" aria-controls="view-rooms">Rooms</button>
     <button role="tab" data-view="settings" aria-selected="false" aria-controls="view-settings">Settings</button>
     <button role="tab" data-view="users" aria-selected="false" aria-controls="view-users" id="tab-users" hidden>Users</button>
   </nav>
@@ -46,9 +47,6 @@
       <p id="lasterror" class="note err" aria-live="polite"></p>
     </div>
 
-    <h2>Rooms</h2>
-    <div class="card" id="rooms" aria-live="polite"><span class="muted">Loading&hellip;</span></div>
-
     <h2>Now</h2>
     <div class="card" id="now" aria-live="polite"><span class="muted">Loading&hellip;</span></div>
 
@@ -66,12 +64,12 @@
     </div>
   </section>
 
-  <!-- Settings -------------------------------------------------------------->
-  <section id="view-settings" role="tabpanel" class="hidden">
+  <!-- Rooms ------------------------------------------------------------------>
+  <section id="view-rooms" role="tabpanel" class="hidden">
     <h2>Rooms</h2>
-    <div class="card" id="roomlist"><span class="muted">Loading&hellip;</span></div>
+    <div class="card" id="rooms"><span class="muted">Loading&hellip;</span></div>
     <p class="note">A room cannot tell who is listening, so it scrobbles for you only
-      once you turn it on here.</p>
+      once you turn on <i>scrobble for me</i>.</p>
 
     <div id="roomform-section" class="hidden">
       <h2 id="roomform-title">Add a room</h2>
@@ -113,7 +111,10 @@
         <p id="audio_note" class="note" aria-live="polite"></p>
       </form>
     </div>
+  </section>
 
+  <!-- Settings -------------------------------------------------------------->
+  <section id="view-settings" role="tabpanel" class="hidden">
     <h2>Services</h2>
     <div class="card" id="services"><span class="muted">Loading&hellip;</span></div>
 
@@ -238,12 +239,13 @@ function setNote(el, text, kind = "") {
 }
 
 // --- tabs, kept in the URL hash so a reload or the back button lands on the same one ---
-const VIEWS = ["listen", "settings", "users"];
+const VIEWS = ["listen", "rooms", "settings", "users"];
 function showView(name) {
   if (!VIEWS.includes(name) || (name === "users" && !me?.is_admin)) name = "listen";
   $$('nav button').forEach(x => x.setAttribute("aria-selected", String(x.dataset.view === name)));
   VIEWS.forEach(v => $(`#view-${v}`).classList.toggle("hidden", v !== name));
-  if (name === "settings") { loadServices(); loadRooms(); if (me?.is_admin) loadAudio(); }
+  if (name === "settings") loadServices();
+  if (name === "rooms") { refresh(); if (me?.is_admin) loadAudio(); }
   if (name === "users") loadUsers();
 }
 $$('nav button').forEach(b => b.onclick = () => {
@@ -285,33 +287,100 @@ function roomState(r) {
   return `<span class="muted">Listening for music&hellip;</span>`;
 }
 
+const roomDot = r => r.running ? (r.last_error ? " err" : " live") : "";
+
+function roomLive(r) {
+  const m = r.last_match;
+  const fresh = m && r.running && Date.now() / 1000 - m.ts < stopSeconds;
+  const now = m && !(r.running && r.last_error)
+    ? `${m.art_url ? `<img src="${esc(m.art_url)}" alt="" loading="lazy">` : ""}
+      <span class="grow"><b>${ext(shazamUrl(m), esc(m.title), "plain")}</b> &middot; ${esc(m.artist)}
+      <span class="muted">&middot; ${fresh ? `<span class="ok">playing now</span>` : when(m.ts)}</span></span>`
+    : roomState(r);
+  return `<div class="room-now grow">${now}</div>
+    ${r.running && r.level_db != null ? levelMeter(r.level_db) : ""}`;
+}
+
+function roomCard(r) {
+  const what = `Scrobble what ${esc(r.name)} hears for me`;
+  return `<div class="room" data-room="${r.id}">
+    <div class="between">
+      <div class="row"><span class="dot${roomDot(r)}" data-dot></span><b>${esc(r.name)}</b>
+        <span class="tag">${r.kind === "stream" ? "camera" : "microphone"}</span>
+        ${r.enabled ? "" : `<span class="badge muted">turned off</span>`}</div>
+      <label class="member" title="${what}"><span>scrobble for me</span>
+        <span class="switch"><input type="checkbox" data-member="${r.id}" ${r.member ? "checked" : ""}
+          aria-label="${what}"><span class="track"></span></span></label>
+    </div>
+    <div class="between small room-live" data-live></div>
+    ${me?.is_admin ? `<div class="row small room-admin">
+      ${r.input ? `<code class="grow">${esc(r.input)}</code>` : ""}
+      <button class="ghost small" data-enable="${r.id}">${r.enabled ? "Turn off" : "Turn on"}</button>
+      <button class="ghost small" data-edit="${r.id}">Edit</button>
+      <button class="danger small" data-remove="${r.id}">Remove</button></div>` : ""}
+  </div>`;
+}
+
+let roomsShape = "";
+const roomsLive = new Map();
 function paintRooms(list) {
   roomsKnown = list;
   const el = $("#rooms");
-  if (!list.length) {
-    el.innerHTML = `<span class="muted">No rooms yet.${me?.is_admin
-      ? ` <a href="#settings" class="accent">Add one in Settings</a>.` : ""}</span>`;
-    return;
+  const shape = JSON.stringify([me?.is_admin, list.map(r => [r.id, r.name, r.kind, r.enabled, r.member, r.input])]);
+  if (shape !== roomsShape) {
+    roomsShape = shape; roomsLive.clear();
+    el.innerHTML = list.length ? list.map(roomCard).join("")
+      : `<span class="muted">No rooms yet.${me?.is_admin ? " Add one below." : ""}</span>`;
   }
-  el.innerHTML = list.map(r => {
-    const m = r.last_match;
-    const fresh = m && r.running && Date.now() / 1000 - m.ts < stopSeconds;
-    const now = m ? `${m.art_url ? `<img src="${esc(m.art_url)}" alt="" loading="lazy">` : ""}
-        <span class="grow"><b>${ext(shazamUrl(m), esc(m.title), "plain")}</b> &middot; ${esc(m.artist)}
-        <span class="muted">&middot; ${fresh ? `<span class="ok">playing now</span>` : when(m.ts)}</span></span>` : "";
-    return `<div class="room">
-      <div class="between">
-        <div class="row"><span class="dot${r.running ? (r.last_error ? " err" : " live") : ""}"
-            title="${r.running ? (r.last_error ? "Failing" : "Listening") : "Not listening"}"></span><b>${esc(r.name)}</b>
-          <span class="tag">${r.kind === "stream" ? "camera" : "microphone"}</span>
-          <span class="badge ${r.member ? "ok" : "muted"}" title="${r.member
-            ? "What this room hears is scrobbled for you" : "Turn it on for yourself under Settings"}">${r.member ? "scrobbles for you" : "not for you"}</span></div>
-        ${r.running && r.level_db != null ? levelMeter(r.level_db) : ""}
-      </div>
-      <div class="room-now small">${now && !(r.running && r.last_error) ? now : roomState(r)}</div>
-    </div>`;
-  }).join("");
+  for (const r of list) {
+    const card = el.querySelector(`[data-room="${r.id}"]`);
+    if (!card) continue;
+    card.querySelector("[data-dot]").className = "dot" + roomDot(r);
+    // Leave the line alone when nothing changed, so a link or an image does
+    // not flicker every five seconds.
+    const html = roomLive(r);
+    if (roomsLive.get(r.id) !== html) { card.querySelector("[data-live]").innerHTML = html; roomsLive.set(r.id, html); }
+  }
 }
+
+// One set of handlers for every card, so a rebuilt card needs none of its own.
+const roomOf = el => {
+  const id = +(el.dataset.member || el.dataset.enable || el.dataset.edit || el.dataset.remove);
+  return roomsKnown.find(r => r.id === id);
+};
+$("#rooms").addEventListener("change", async e => {
+  const box = e.target.closest("[data-member]");
+  if (!box) return;
+  const r = roomOf(box), on = box.checked;
+  box.disabled = true;
+  try {
+    await send(`api/rooms/${r.id}/member`, "PUT", {on});
+    toast(on ? `${r.name} now scrobbles for you` : `${r.name} no longer scrobbles for you`, "ok");
+    await refresh(true);
+  } catch (err) { box.checked = !on; toast(err.message, "err"); }
+  finally { box.disabled = false; }
+});
+$("#rooms").addEventListener("click", e => {
+  const b = e.target.closest("[data-enable], [data-edit], [data-remove]");
+  if (!b) return;
+  const r = roomOf(b);
+  if (b.dataset.edit) return editRoom(r);
+  if (b.dataset.enable) return busy(b, async () => {
+    try {
+      await send(`api/rooms/${r.id}`, "PUT", {enabled: !r.enabled});
+      toast(r.enabled ? `${r.name} turned off` : `${r.name} turned on`, "ok");
+      await refresh(true);
+    } catch (err) { toast(err.message, "err"); }
+  });
+  if (!confirm(`Remove ${r.name}? Its scrobbles stay in everyone's history.`)) return;
+  busy(b, async () => {
+    try {
+      await api(`api/rooms/${r.id}`, {method: "DELETE"});
+      if (editing?.id === r.id) resetRoomForm();
+      toast(`${r.name} removed`); await refresh(true);
+    } catch (err) { toast(err.message, "err"); }
+  });
+});
 
 function paintStatus(st) {
   const parts = [];
@@ -321,6 +390,12 @@ function paintStatus(st) {
   } else {
     parts.push(`<span class="warn">no service connected &middot;
       <a href="#settings" class="accent">connect one</a></span>`);
+  }
+  const rooms = st.rooms || [];
+  if (rooms.length) {
+    const on = rooms.filter(r => r.running).length, failing = rooms.filter(r => r.running && r.last_error).length;
+    parts.push(`<a href="#rooms" class="plain">${on} of ${rooms.length} room${rooms.length === 1 ? "" : "s"} listening${failing
+      ? ` &middot; <span class="err">${failing} failing</span>` : ""}</a>`);
   }
   if (st.attempts) {
     const lastTry = st.last_attempt ? ` &middot; last ${esc(ago(st.last_attempt))}` : "";
@@ -334,7 +409,7 @@ function paintNow(st) {
   const el = $("#now");
   if (!m) {
     let text;
-    // A room's own error shows in its row above.
+    // A room's own error shows on the Rooms tab.
     if (!listening && !micOn) text = `<span class="muted">Not listening.</span>`;
     else if (!st.attempts) text = `<span class="muted">Starting&hellip;</span>`;
     else text = `<span class="muted">No match yet. Listening for music&hellip;</span>`;
@@ -387,33 +462,40 @@ function paintHistory(rows) {
   if (html !== lastHistory) { $("#history").innerHTML = html; lastHistory = html; }
 }
 
-let refreshing = false;
-async function refresh() {
-  if (refreshing) return;
-  refreshing = true;
-  try {
-    let st;
-    try { st = await api("api/status"); } catch { return; }
-    listening = st.listening;
-    profiles = st.profiles || {};
-    $("#dot").className = "dot" + (listening ? " live" : "");
-    const live = (st.rooms || []).filter(r => r.running).length;
-    $("#dot").title = listening ? `Listening in ${live} room${live === 1 ? "" : "s"}` : "Not listening";
-    const t = $("#toggle");
-    t.classList.remove("busy");
-    t.textContent = listening ? "Stop listening" : "Start listening";
-    t.classList.toggle("stop", listening);
-    t.disabled = !me?.is_admin;
-    $("#adminnote").textContent = me?.is_admin
-      ? "" : "Only an administrator can start or stop listening.";
-    $("#lasterror").textContent = st.rate_limited_for
-      ? `Shazam is limiting requests, so every room waits ${st.rate_limited_for}s.` : "";
-    paintStatus(st);
-    stopSeconds = st.stop_seconds || 180;
-    paintRooms(st.rooms || []);
-    paintNow(st);
-    paintHistory(await api("api/recent?limit=50"));
-  } finally { refreshing = false; }
+let refreshing = null;
+// `force` is for after a change: a poll already in flight may have read the
+// state from before it, so wait for it and read again.
+async function refresh(force = false) {
+  if (refreshing) {
+    if (!force) return;
+    await refreshing.catch(() => {});
+    if (refreshing) return refreshing;
+  }
+  refreshing = doRefresh().finally(() => { refreshing = null; });
+  return refreshing;
+}
+async function doRefresh() {
+  let st;
+  try { st = await api("api/status"); } catch { return; }
+  listening = st.listening;
+  profiles = st.profiles || {};
+  $("#dot").className = "dot" + (listening ? " live" : "");
+  const live = (st.rooms || []).filter(r => r.running).length;
+  $("#dot").title = listening ? `Listening in ${live} room${live === 1 ? "" : "s"}` : "Not listening";
+  const t = $("#toggle");
+  t.classList.remove("busy");
+  t.textContent = listening ? "Stop listening" : "Start listening";
+  t.classList.toggle("stop", listening);
+  t.disabled = !me?.is_admin;
+  $("#adminnote").textContent = me?.is_admin
+    ? "" : "Only an administrator can start or stop listening.";
+  $("#lasterror").textContent = st.rate_limited_for
+    ? `Shazam is limiting requests, so every room waits ${st.rate_limited_for}s.` : "";
+  paintStatus(st);
+  stopSeconds = st.stop_seconds || 180;
+  paintRooms(st.rooms || []);
+  paintNow(st);
+  paintHistory(await api("api/recent?limit=50"));
 }
 
 $("#toggle").onclick = () => busy($("#toggle"), async () => {
@@ -693,62 +775,6 @@ async function loadServices() {
 }
 
 // --- rooms ---
-async function loadRooms() {
-  let list;
-  try { list = await api("api/rooms"); }
-  catch (e) { $("#roomlist").innerHTML = `<span class="err">${esc(e.message)}</span>`; return; }
-  roomsKnown = list;
-  if (!list.length) {
-    $("#roomlist").innerHTML = `<span class="muted">No rooms yet.${me.is_admin ? " Add one below." : ""}</span>`;
-    return;
-  }
-  $("#roomlist").innerHTML = list.map(r => `<div class="service">
-    <div class="between">
-      <div class="grow"><b>${esc(r.name)}</b> <span class="tag">${r.kind === "stream" ? "camera" : "microphone"}</span>
-        ${r.enabled ? "" : `<span class="badge muted">turned off</span>`}
-        ${me.is_admin && r.input ? `<div class="small muted" style="margin-top:.25rem"><code>${esc(r.input)}</code></div>` : ""}</div>
-      <label class="switch" title="Scrobble what ${esc(r.name)} hears for me">
-        <input type="checkbox" data-member="${r.id}" ${r.member ? "checked" : ""}
-               aria-label="Scrobble what ${esc(r.name)} hears for me"><span class="track"></span></label>
-    </div>
-    ${me.is_admin ? `<div class="row" style="margin-top:.5rem">
-      <button class="ghost small" data-enable="${r.id}">${r.enabled ? "Turn off" : "Turn on"}</button>
-      <button class="ghost small" data-edit="${r.id}">Edit</button>
-      <button class="danger small" data-remove="${r.id}">Remove</button></div>` : ""}
-  </div>`).join("");
-
-  $$("[data-member]").forEach(box => box.onchange = async () => {
-    const r = list.find(x => x.id === +box.dataset.member), on = box.checked;
-    box.disabled = true;
-    try {
-      await send(`api/rooms/${r.id}/member`, "PUT", {on});
-      toast(on ? `${r.name} now scrobbles for you` : `${r.name} no longer scrobbles for you`, "ok");
-      refresh();
-    } catch (e) { box.checked = !on; toast(e.message, "err"); }
-    finally { box.disabled = false; }
-  });
-  $$("[data-enable]").forEach(b => b.onclick = () => busy(b, async () => {
-    const r = list.find(x => x.id === +b.dataset.enable);
-    try {
-      await send(`api/rooms/${r.id}`, "PUT", {enabled: !r.enabled});
-      toast(r.enabled ? `${r.name} turned off` : `${r.name} turned on`, "ok");
-      await loadRooms(); refresh();
-    } catch (e) { toast(e.message, "err"); }
-  }));
-  $$("[data-edit]").forEach(b => b.onclick = () => editRoom(list.find(x => x.id === +b.dataset.edit)));
-  $$("[data-remove]").forEach(b => b.onclick = () => {
-    const r = list.find(x => x.id === +b.dataset.remove);
-    if (!confirm(`Remove ${r.name}? Its scrobbles stay in everyone's history.`)) return;
-    busy(b, async () => {
-      try {
-        await api(`api/rooms/${r.id}`, {method: "DELETE"});
-        if (editing?.id === r.id) resetRoomForm();
-        toast(`${r.name} removed`); await loadRooms(); refresh();
-      } catch (e) { toast(e.message, "err"); }
-    });
-  });
-}
-
 // The form adds a room, or edits the one in `editing`.
 const OTHER = "__other__", ENV = "";
 let audioState = null, editing = null;
@@ -834,9 +860,9 @@ $("#roomform").onsubmit = e => {
       const body = roomBody();
       const r = editing ? await send(`api/rooms/${editing.id}`, "PUT", body)
                         : await send("api/rooms", "POST", body);
-      toast(editing ? `${r.name} saved` : `${r.name} added. It scrobbles for you; others choose it in Settings.`, "ok");
+      toast(editing ? `${r.name} saved` : `${r.name} added. It scrobbles for you; others turn it on here.`, "ok");
       resetRoomForm();
-      await loadRooms(); refresh();
+      await refresh(true);
     } catch (err) { note.className = "note err"; note.textContent = err.message; }
   });
 };
