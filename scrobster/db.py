@@ -3,6 +3,9 @@
 Schema 2 splits a recognition from its outcome. `matches` is what the audio was,
 which is shared. `scrobbles` is what each user sent where, because one match can
 go to several users with different services.
+
+Schema 3 adds rooms. Each room is one input, a microphone on this machine or a
+camera stream, and each user chooses which rooms scrobble for them.
 """
 import json
 import os
@@ -11,7 +14,7 @@ import sqlite3
 
 from . import config
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _conn():
@@ -34,8 +37,8 @@ def _create_schema(c):
             username TEXT NOT NULL UNIQUE COLLATE NOCASE,
             password_hash TEXT NOT NULL,
             is_admin INTEGER NOT NULL DEFAULT 0,
-            -- A room microphone cannot know who is listening, so sharing its
-            -- matches is a choice each user makes.
+            -- Schema 2 had one room. Its choice moved to room_members in schema 3
+            -- and this column is no longer read.
             room_mic INTEGER NOT NULL DEFAULT 0,
             api_token TEXT UNIQUE,
             created_at INTEGER NOT NULL);
@@ -57,7 +60,10 @@ def _create_schema(c):
             ts INTEGER NOT NULL,
             artist TEXT, title TEXT, album TEXT,
             track_key TEXT, art_url TEXT,
-            source TEXT NOT NULL DEFAULT 'server');
+            source TEXT NOT NULL DEFAULT 'server',
+            -- The room's name when it was heard, so the history still reads
+            -- right after the room is renamed or removed.
+            room TEXT);
 
         CREATE TABLE IF NOT EXISTS scrobbles(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -75,6 +81,24 @@ def _create_schema(c):
         CREATE TABLE IF NOT EXISTS settings(
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL);
+
+        -- One input each. A device room records with ffmpeg's `backend` from
+        -- `device`, and empty values follow AUDIO_BACKEND and AUDIO_DEVICE. A
+        -- stream room reads `url`, an RTSP or RTSPS camera for example.
+        CREATE TABLE IF NOT EXISTS rooms(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            kind TEXT NOT NULL DEFAULT 'device',
+            backend TEXT, device TEXT, url TEXT,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at INTEGER NOT NULL);
+
+        -- A room cannot know who is listening, so receiving what it hears is a
+        -- choice each user makes, room by room.
+        CREATE TABLE IF NOT EXISTS room_members(
+            room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            PRIMARY KEY (room_id, user_id));
         """
     )
 
@@ -110,6 +134,29 @@ def adopt_legacy_history(user_id) -> int:
     return moved
 
 
+def _add_rooms(c):
+    """Turn the single microphone of schema 2 into the first room.
+
+    A fresh database gets the same room, so a new install listens as before. The
+    device chosen in Settings moves into the room, and so does each user's
+    choice to receive the microphone.
+    """
+    columns = {r["name"] for r in c.execute("PRAGMA table_info(matches)")}
+    if "room" not in columns:
+        c.execute("ALTER TABLE matches ADD COLUMN room TEXT")
+    if c.execute("SELECT COUNT(*) FROM rooms").fetchone()[0]:
+        return
+    saved = {r["key"]: r["value"] for r in c.execute(
+        "SELECT key, value FROM settings WHERE key IN ('audio_backend', 'audio_device')")}
+    room = c.execute(
+        "INSERT INTO rooms(name, kind, backend, device, created_at)"
+        " VALUES('Server mic', 'device', ?, ?, strftime('%s', 'now'))",
+        (saved.get("audio_backend"), saved.get("audio_device"))).lastrowid
+    c.execute("INSERT INTO room_members(room_id, user_id)"
+              " SELECT ?, id FROM users WHERE room_mic=1", (room,))
+    c.execute("DELETE FROM settings WHERE key IN ('audio_backend', 'audio_device')")
+
+
 def init():
     # sqlite reports only "unable to open database file" for a missing directory
     # and for one it may not write. Say which, because the usual cause is a
@@ -138,18 +185,20 @@ def init():
             # owner account exists.
             c.execute("ALTER TABLE matches RENAME TO matches_v1")
         _create_schema(c)
+        if version < 3:
+            _add_rooms(c)
         c.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.close()
 
 
 # --- matches and scrobbles -------------------------------------------------
 
-def add_match(ts, artist, title, album, track_key, art_url, source) -> int:
+def add_match(ts, artist, title, album, track_key, art_url, source, room=None) -> int:
     with _conn() as c:
         cur = c.execute(
-            "INSERT INTO matches(ts, artist, title, album, track_key, art_url, source)"
-            " VALUES(?,?,?,?,?,?,?)",
-            (ts, artist, title, album, track_key, art_url, source),
+            "INSERT INTO matches(ts, artist, title, album, track_key, art_url, source,"
+            " room) VALUES(?,?,?,?,?,?,?,?)",
+            (ts, artist, title, album, track_key, art_url, source, room),
         )
         return cur.lastrowid
 
@@ -191,7 +240,8 @@ def recent(user_id, limit=50):
         item = index.get(r["id"])
         if item is None:
             item = {k: r[k] for k in
-                    ("id", "ts", "artist", "title", "album", "track_key", "art_url", "source")}
+                    ("id", "ts", "artist", "title", "album", "track_key", "art_url", "source",
+                     "room")}
             item["services"] = {}
             index[r["id"]] = item
             out.append(item)

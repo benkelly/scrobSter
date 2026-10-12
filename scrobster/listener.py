@@ -1,4 +1,7 @@
-"""Capture loop: ffmpeg chunk -> shazamio match -> dedup -> store -> scrobble.
+"""Capture loops: ffmpeg chunk -> shazamio match -> dedup -> store -> scrobble.
+
+Each room runs its own loop. They share one Shazam queue, because every request
+leaves from the same address and the rate limit counts them all.
 
 CLI:
   python -m scrobster.listener song.wav   # match one file, print, exit
@@ -20,7 +23,7 @@ import aiohttp
 from shazamio import Shazam
 from shazamio.interfaces.client import HTTPClientInterface
 
-from . import accounts, config, db, enrich, scrobble
+from . import accounts, config, db, enrich, rooms, scrobble
 
 log = logging.getLogger("scrobster")
 
@@ -291,28 +294,80 @@ async def _ffmpeg(*argv, data=None, timeout):
     return proc.returncode, err.decode(errors="replace")
 
 
-async def capture_chunk(seconds=None, backend=None, device=None) -> bytes:
-    """Record one chunk. The arguments override the configured device, for a test."""
+def input_args(backend=None, device=None, url=None) -> list[str]:
+    """ffmpeg's input options for a device, or for a stream when `url` is set."""
+    if not url:
+        return ["-f", backend or config.AUDIO_BACKEND, "-i", device or config.AUDIO_DEVICE]
+    args = []
+    if url.lower().startswith(("rtsp://", "rtsps://")):
+        # TCP survives a lossy network, where UDP drops packets and with them
+        # the fingerprint. Asking for audio only means the camera never sends
+        # its video, which would be thrown away.
+        args += ["-rtsp_transport", "tcp", "-allowed_media_types", "audio"]
+    return args + ["-i", url, "-vn"]
+
+
+async def capture_chunk(seconds=None, backend=None, device=None, url=None) -> bytes:
+    """Record one chunk from a device, or from a stream when `url` is set. Left
+    out, the device is the configured one."""
     # ponytail: one ffmpeg spawn per chunk; self-heals when the device drops.
     # Write a temp file, never a pipe: piped WAV gets 0xFFFFFFFF RIFF sizes because
     # ffmpeg cannot seek back to patch them, and the decoder then reads no samples.
     with tempfile.TemporaryDirectory() as tmp:
         path = pathlib.Path(tmp) / "chunk.wav"
         seconds = seconds or config.CHUNK_SECONDS
-        code, err = await _ffmpeg(
-            "-f", backend or config.AUDIO_BACKEND, "-i", device or config.AUDIO_DEVICE,
-            "-t", str(seconds), "-ac", "1", "-ar", "16000", "-y", str(path),
-            timeout=seconds + FFMPEG_GRACE_SECONDS)
+        try:
+            code, err = await _ffmpeg(
+                *input_args(backend, device, url),
+                "-t", str(seconds), "-ac", "1", "-ar", "16000", "-y", str(path),
+                timeout=seconds + FFMPEG_GRACE_SECONDS)
+        except RuntimeError as e:
+            raise RuntimeError(rooms.redact(str(e), url)) from None
         data = path.read_bytes() if path.exists() else b""
         if code != 0 or not data:
-            raise RuntimeError(f"ffmpeg capture failed: {err[-300:]}")
+            if url:
+                raise RuntimeError(rooms.redact(await _explain_stream_error(err, url), url))
+            raise RuntimeError(f"ffmpeg capture failed: {short_error(err)}")
         return data
 
 
-async def probe_level(backend, device, seconds=3) -> float:
-    """Record a short clip from a device and report its peak, to check that the
-    device hears anything before committing to it."""
-    return peak_dbfs(await capture_chunk(seconds, backend, device))
+def short_error(err: str) -> str:
+    """The line of ffmpeg's log that says what went wrong. The last lines only
+    repeat that opening the input failed, and ALSA's own lines are noise."""
+    lines = [re.sub(r"^\[[^\]]*\]\s*", "", line).strip()
+             for line in err.splitlines() if line.strip()]
+    useful = [line for line in lines
+              if not line.startswith(("Error opening input", "ALSA lib"))]
+    return ((useful or lines or ["no output"])[0])[:300]
+
+
+# A refusal the camera named. Anything else may be a camera with its audio
+# turned off: asked for audio only, it has nothing to play and fails strangely.
+_NAMED_FAILURE = re.compile(r"\b(401|403|404)\b|refused|timed out|resolve|unreachable",
+                            re.IGNORECASE)
+
+
+async def _explain_stream_error(err: str, url: str) -> str:
+    """One readable line for a stream that failed, rather than ffmpeg's log."""
+    last = short_error(err)
+    if _NAMED_FAILURE.search(err):
+        return f"the camera refused: {last}"
+    # Open the whole stream once and ask for its first audio track.
+    args = [a for a in input_args(url=url) if a not in ("-allowed_media_types", "audio")]
+    try:
+        code, probe = await _ffmpeg(*args, "-map", "0:a:0", "-t", "0.5", "-f", "null", "-",
+                                    timeout=FFMPEG_GRACE_SECONDS)
+    except RuntimeError:
+        return f"the stream failed: {last}"
+    if code != 0 and "matches no streams" in probe:
+        return "the stream has no audio track; turn on the camera's audio"
+    return f"the stream failed: {last}"
+
+
+async def probe_level(backend=None, device=None, url=None, seconds=3) -> float:
+    """Record a short clip from a device or stream and report its peak, to check
+    that it hears anything before committing to it."""
+    return peak_dbfs(await capture_chunk(seconds, backend, device, url))
 
 
 async def decode_to_wav(data: bytes) -> bytes:
@@ -333,105 +388,216 @@ async def decode_to_wav(data: bytes) -> bytes:
         return wav
 
 
+class Room:
+    """One input, and what it last heard. Everybody signed in may see this."""
+
+    def __init__(self, row):
+        self.id = row["id"]
+        self.update(row)
+        self.task = None
+        self.started_at = None
+        self.last_match = None
+        self.reset_input()
+        self.last_attempt = None
+        self.attempts = 0
+
+    def update(self, row) -> bool:
+        """Take the saved settings. True when the input itself changed."""
+        before = getattr(self, "_input", None)
+        self.name = row["name"]
+        self.kind = row["kind"]
+        self.enabled = bool(row["enabled"])
+        self.url = row["url"] if row["kind"] == "stream" else None
+        self.backend = row["backend"]
+        self.device = row["device"]
+        self._input = (self.kind, self.backend, self.device, self.url)
+        return before is not None and before != self._input
+
+    def reset_input(self):
+        """Forget what the previous input reported, after it changed."""
+        self.last_level_db = None
+        self.last_error = None
+        self._warned_silent = False
+
+    def capture_args(self) -> dict:
+        if self.kind == "stream":
+            return {"url": self.url}
+        return {"backend": self.backend or config.AUDIO_BACKEND,
+                "device": self.device or config.AUDIO_DEVICE}
+
+    def describe(self) -> str:
+        if self.kind == "stream":
+            return rooms.mask_url(self.url)
+        args = self.capture_args()
+        return f"{args['backend']} {args['device']}"
+
+    @property
+    def running(self) -> bool:
+        return self.task is not None and not self.task.done()
+
+    async def stop(self):
+        if self.task:
+            self.task.cancel()
+            try:
+                await self.task
+            except asyncio.CancelledError:
+                pass
+            self.task = None
+
+
 class Listener:
     def __init__(self):
-        self._task = None
         self._shazam = Shazam(segment_duration_seconds=segment_seconds(config.CHUNK_SECONDS),
                               http_client=ShazamClient())
         if config.CHUNK_SECONDS > MAX_SEGMENT_SECONDS:
             log.warning("CHUNK_SECONDS=%s, but only %ss is fingerprinted; longer windows"
                         " stop matching", config.CHUNK_SECONDS, MAX_SEGMENT_SECONDS)
+        self.rooms = {}  # room id -> Room
+        self.running = False  # an administrator started listening
+        self.started_at = None
+        # One queue to Shazam for every room and browser clip.
+        self._shazam_lock = asyncio.Lock()
+        self._last_request = 0.0  # monotonic
+        self._blocked_until = 0.0  # monotonic, set by a 429
+        self._backoff = 0  # seconds, grows while Shazam answers 429
         # (user_id, track_key) -> (ts, offset); in memory, a restart forgets
         self._last_plays = {}
         self._now_playing = {}  # user_id -> (track_key, ts) of the last mark
         self._last_match_at = {}  # user_id -> when their audio was last identified
-        self._warned_silent = False
-        self.last_match = None  # the room microphone's, which everyone may see
         self.browser_matches = {}  # user_id -> their own last browser clip
-        self.last_error = None
-        self.last_level_db = None
-        self.last_attempt = None
-        self.attempts = 0
-        self.started_at = None
-
-    def reset_input(self):
-        """Forget what the previous device reported, after the device changed."""
-        self.last_level_db = None
-        self.last_error = None
-        self._warned_silent = False
 
     @property
     def listening(self) -> bool:
-        return self._task is not None and not self._task.done()
+        return any(room.running for room in self.rooms.values())
+
+    def first_room(self):
+        return self.rooms[min(self.rooms)] if self.rooms else None
+
+    async def sync_rooms(self):
+        """Bring the running loops in line with the saved rooms, after a change.
+
+        A changed input takes effect at the room's next capture, so its loop
+        keeps running. A removed or turned off room stops.
+        """
+        saved = {row["id"]: row for row in rooms.list_rooms()}
+        for room_id in [r for r in self.rooms if r not in saved]:
+            await self.rooms.pop(room_id).stop()
+        for room_id, row in saved.items():
+            room = self.rooms.get(room_id)
+            if room is None:
+                room = self.rooms[room_id] = Room(row)
+            elif room.update(row):
+                room.reset_input()
+            if self.running and room.enabled:
+                self._start_room(room)
+            elif room.running:
+                await room.stop()
+        if not self.listening:
+            await self._clear_all()
+
+    def _start_room(self, room):
+        if not room.running:
+            room.started_at = int(time.time())
+            room.task = asyncio.create_task(self._loop(room))
 
     def start(self):
-        if not self.listening:
+        """Listen in every room that is turned on."""
+        if not self.running:
             self.started_at = int(time.time())
-            self._task = asyncio.create_task(self._loop())
+        self.running = True
+        for room in self.rooms.values():
+            if room.enabled:
+                self._start_room(room)
 
     async def stop(self):
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
-        # Stopping on purpose means nothing is playing.
-        for user_id in list(self._now_playing):
-            await scrobble.clear_now_playing_all(accounts.get_credentials(user_id))
-        self._now_playing.clear()
+        self.running = False
+        for room in self.rooms.values():
+            await room.stop()
+        await self._clear_all()
 
-    async def _loop(self):
-        log.info("listening: %s %s, one match per %ss",
-                 config.AUDIO_BACKEND, config.AUDIO_DEVICE, config.MATCH_INTERVAL)
-        backoff = 0  # seconds, grows while Shazam answers 429
+    async def _clear_all(self):
+        """Stopping on purpose means nothing is playing."""
+        marks, self._now_playing = list(self._now_playing), {}
+        for user_id in marks:
+            await scrobble.clear_now_playing_all(accounts.get_credentials(user_id))
+
+    def rate_limited_for(self) -> float:
+        """Seconds until Shazam may be asked again after a 429, or 0."""
+        return max(0.0, self._blocked_until - time.monotonic())
+
+    async def recognize(self, wav: bytes):
+        """Ask Shazam, one request at a time and no closer together than
+        RECOGNITION_GAP_SECONDS, so adding rooms does not add to the rate."""
+        async with self._shazam_lock:
+            wait = self.rate_limited_for()
+            if wait:
+                raise RateLimited(f"Shazam is limiting requests; trying again in {wait:.0f}s")
+            gap = self._last_request + config.RECOGNITION_GAP_SECONDS - time.monotonic()
+            if gap > 0:
+                await asyncio.sleep(gap)
+            self._last_request = time.monotonic()
+            try:
+                result = await self._shazam.recognize(wav)
+            except RateLimited as e:
+                self._backoff = rate_limit_wait(self._backoff)
+                self._blocked_until = time.monotonic() + self._backoff
+                raise RateLimited(f"{e}; trying again in {self._backoff:.0f}s") from None
+            self._backoff = 0
+            return result
+
+    async def _loop(self, room):
+        log.info("listening in %s: %s, one match per %ss",
+                 room.name, room.describe(), config.MATCH_INTERVAL)
         while True:
             cycle_start = time.monotonic()
             try:
-                wav = await capture_chunk()
-                self.attempts += 1
-                self.last_attempt = int(time.time())
-                self.last_level_db = peak_dbfs(wav)
-                if self.last_level_db < SILENT_DBFS:
+                wait = self.rate_limited_for()
+                if wait:
+                    # Recording now would only be thrown away.
+                    await asyncio.sleep(wait)
+                    continue
+                wav = await capture_chunk(**room.capture_args())
+                room.attempts += 1
+                room.last_attempt = int(time.time())
+                room.last_level_db = peak_dbfs(wav)
+                if room.last_level_db < SILENT_DBFS:
                     # Nothing audible: skip the request instead of spending quota on silence.
-                    if not self._warned_silent:
-                        log.warning("input is silent (%.0f dBFS), skipping recognition -"
-                                    " is AUDIO_DEVICE=%s correct?",
-                                    self.last_level_db, config.AUDIO_DEVICE)
-                        self._warned_silent = True
+                    if not room._warned_silent:
+                        log.warning("%s is silent (%.0f dBFS), skipping recognition -"
+                                    " is its input %s correct?",
+                                    room.name, room.last_level_db, room.describe())
+                        room._warned_silent = True
                 else:
-                    self._warned_silent = False
-                    await self.match_bytes(wav)
-                    self.last_error = None
+                    room._warned_silent = False
+                    await self.match_bytes(wav, room=room)
+                    room.last_error = None
                 await self._clear_if_stopped()
             except asyncio.CancelledError:
                 raise
             except RateLimited as e:
-                backoff = rate_limit_wait(backoff)
-                self.last_error = f"{e}; trying again in {backoff:.0f}s"
-                log.warning("%s", self.last_error)
-                await asyncio.sleep(backoff)
+                room.last_error = str(e)
+                log.warning("%s: %s", room.name, e)
                 continue
             except Exception as e:
-                self.last_error = str(e)[:300]
-                log.warning("cycle failed: %s", e)
-            backoff = 0
+                room.last_error = rooms.redact(str(e), room.url)[:300]
+                log.warning("%s: cycle failed: %s", room.name, room.last_error)
             elapsed = time.monotonic() - cycle_start
             await asyncio.sleep(max(0, config.MATCH_INTERVAL - elapsed))
 
     def last_match_for(self, user_id):
-        """The newest match this user may see: the room's, or their own clip.
+        """The newest match this user may see: any room's, or their own clip.
         A browser clip belongs to the person who recorded it."""
-        mine = self.browser_matches.get(user_id)
-        if mine and (self.last_match is None or mine["ts"] >= self.last_match["ts"]):
-            return mine
-        return self.last_match
+        seen = [room.last_match for room in self.rooms.values() if room.last_match]
+        if self.browser_matches.get(user_id):
+            seen.append(self.browser_matches[user_id])
+        return max(seen, key=lambda m: m["ts"], default=None)
 
     async def _clear_if_stopped(self):
         """Drop each user's playing-now mark once their music has stopped.
 
         Per user, because a browser clip keeps only its own user's mark alive.
+        Every room calls this, so the stale marks are taken before the first
+        network call, and a second room cannot clear them again.
         """
         now = int(time.time())
         stale = [u for u, mark in list(self._now_playing.items())
@@ -443,32 +609,34 @@ class Listener:
                  config.NOW_PLAYING_STOP_SECONDS)
         for user_id in stale:
             self._now_playing.pop(user_id, None)
+        for user_id in stale:
             await scrobble.clear_now_playing_all(accounts.get_credentials(user_id))
 
     async def match_bytes(self, wav: bytes, source: str = "server",
-                          users=None) -> dict | None:
+                          users=None, room=None) -> dict | None:
         """Identify WAV bytes and scrobble for each given user.
 
-        The capture loop passes the users who opted in to the room microphone.
-        The browser endpoint passes only the user who recorded the clip, because
-        that listen is theirs alone.
+        A room passes the users who chose to receive it. The browser endpoint
+        passes only the user who recorded the clip, because that listen is
+        theirs alone.
         """
-        info = parse_track(await self._shazam.recognize(wav))
+        info = parse_track(await self.recognize(wav))
         if not (info and info["track_key"]):
             return None
         if users is None:
-            users = accounts.room_mic_users()
-        await self._on_match(info, source, users)
+            users = rooms.members(room.id) if room else []
+        await self._on_match(info, source, users, room)
         return info
 
-    async def _on_match(self, info, source, users):
+    async def _on_match(self, info, source, users, room=None):
         now = int(time.time())
-        match = {**info, "ts": now, "source": source}
-        if source == "browser":
+        match = {**info, "ts": now, "source": source,
+                 "room": room.name if room else None, "room_id": room.id if room else None}
+        if room is None:
             for user in users:
                 self.browser_matches[user["id"]] = match
         else:
-            self.last_match = match
+            room.last_match = match
         for user in users:
             self._last_match_at[user["id"]] = now
         forget_old_plays(self._last_plays, now, config.RESCROBBLE_MINUTES * 60)
@@ -493,6 +661,8 @@ class Listener:
                 await scrobble.now_playing_all(credentials, info["artist"],
                                                info["title"], info["album"], extra)
 
+            # Per user, not per room, so a song that two rooms hear at once is
+            # still one play.
             key = (user["id"], info["track_key"])
             if not should_scrobble(key, now, info.get("offset"), self._last_plays,
                                    config.RESCROBBLE_MINUTES * 60):
@@ -507,9 +677,11 @@ class Listener:
             if match_id is None:
                 match_id = db.add_match(now, info["artist"], info["title"],
                                         info["album"], info["track_key"],
-                                        info["art_url"], source)
+                                        info["art_url"], source,
+                                        room.name if room else None)
             db.add_scrobbles(match_id, user["id"], results)
-            log.info("scrobbled for %s: %s - %s -> %s", user["username"],
+            log.info("scrobbled for %s%s: %s - %s -> %s", user["username"],
+                     f" from {room.name}" if room else "",
                      info["artist"], info["title"], results)
 
 
@@ -522,8 +694,9 @@ async def _main():
     db.init()
     accounts.ensure_first_user()
     listener = Listener()
+    await listener.sync_rooms()
     listener.start()
-    await listener._task
+    await asyncio.gather(*(room.task for room in listener.rooms.values() if room.task))
 
 
 if __name__ == "__main__":
