@@ -418,7 +418,7 @@ function paintNow(st) {
   }
   const stopAfter = st.stop_seconds || 180;
   const live = (listening || micOn) && Date.now() / 1000 - m.ts < stopAfter;
-  const source = m.room || (m.source === "browser" ? "this device" : "room microphone");
+  const source = m.room || "this device";
   el.innerHTML = `
     ${m.art_url ? `<img src="${esc(m.art_url)}" alt="">`
                 : `<div class="art-empty" aria-hidden="true">&#9834;</div>`}

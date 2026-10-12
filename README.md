@@ -96,8 +96,9 @@ number of rooms. A silent room asks nothing. A 429 pauses every room, from one
 minute up to ten.
 
 An upgrade from 0.2 keeps working as before. The microphone becomes the first
-room, named "Room microphone", with the device chosen in Settings. Everyone who
-received the microphone receives that room.
+room, named "Server mic", with the device chosen in Settings. Everyone who
+received the microphone receives that room. Rename it after the room it is in
+with **Edit** on the Rooms tab.
 
 ## Requirements
 

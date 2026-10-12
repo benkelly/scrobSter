@@ -388,7 +388,7 @@ def check_privacy():
             kitchen = room.first_room()
             asyncio.run(room._on_match({**info, "title": "Radio"}, "server", [], kitchen))
             assert room.last_match_for(alice["id"])["title"] == "Radio", "the room is shared"
-            assert room.last_match_for(alice["id"])["room"] == "Room microphone"
+            assert room.last_match_for(alice["id"])["room"] == "Server mic"
 
             # No marks, nothing to clear, and nothing logged every cycle.
             calls = []
@@ -712,7 +712,7 @@ def check_rooms():
             db.init()  # a second start changes nothing
             first, = rooms.list_rooms()
             assert (first["name"], first["kind"], first["device"]) == \
-                ("Room microphone", "device", "hw:1,0"), first
+                ("Server mic", "device", "hw:1,0"), first
             assert rooms.rooms_of(1) == [first["id"]] and rooms.rooms_of(2) == [], \
                 "whoever received the microphone receives the room"
             assert db.get_setting("audio_device") is None, "the choice moved into the room"
@@ -721,7 +721,7 @@ def check_rooms():
 
             alice, bob = accounts.get_user(1), accounts.get_user(2)
             try:
-                rooms.add_room(name="room MICROPHONE", kind="device")
+                rooms.add_room(name="server MIC", kind="device")
                 raise AssertionError("names are unique, whatever the case")
             except ValueError:
                 pass
@@ -788,7 +788,7 @@ def check_rooms():
                 with sqlite3.connect(config.DB_PATH) as c:
                     assert {r[0] for r in c.execute(
                         "SELECT room FROM matches WHERE title='Song'")} == \
-                        {"Room microphone", "Hall"}, "the history says where"
+                        {"Server mic", "Hall"}, "the history says where"
                 assert db.recent(bob["id"])[0]["room"] == "Hall"
 
                 # Turning a room off or removing it stops only that room.

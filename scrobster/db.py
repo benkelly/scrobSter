@@ -139,7 +139,7 @@ def _add_rooms(c):
 
     A fresh database gets the same room, so a new install listens as before. The
     device chosen in Settings moves into the room, and so does each user's
-    choice to receive the room microphone.
+    choice to receive the microphone.
     """
     columns = {r["name"] for r in c.execute("PRAGMA table_info(matches)")}
     if "room" not in columns:
@@ -150,7 +150,7 @@ def _add_rooms(c):
         "SELECT key, value FROM settings WHERE key IN ('audio_backend', 'audio_device')")}
     room = c.execute(
         "INSERT INTO rooms(name, kind, backend, device, created_at)"
-        " VALUES('Room microphone', 'device', ?, ?, strftime('%s', 'now'))",
+        " VALUES('Server mic', 'device', ?, ?, strftime('%s', 'now'))",
         (saved.get("audio_backend"), saved.get("audio_device"))).lastrowid
     c.execute("INSERT INTO room_members(room_id, user_id)"
               " SELECT ?, id FROM users WHERE room_mic=1", (room,))
