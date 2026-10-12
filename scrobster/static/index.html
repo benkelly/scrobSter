@@ -46,6 +46,9 @@
       <p id="lasterror" class="note err" aria-live="polite"></p>
     </div>
 
+    <h2>Rooms</h2>
+    <div class="card" id="rooms" aria-live="polite"><span class="muted">Loading&hellip;</span></div>
+
     <h2>Now</h2>
     <div class="card" id="now" aria-live="polite"><span class="muted">Loading&hellip;</span></div>
 
@@ -65,47 +68,50 @@
 
   <!-- Settings -------------------------------------------------------------->
   <section id="view-settings" role="tabpanel" class="hidden">
-    <h2>Room microphone</h2>
-    <div class="card between">
-      <div class="grow">
-        <div>Scrobble what the room microphone hears</div>
-        <div class="muted small">
-          The shared microphone cannot tell who is listening, so this is off
-          until you turn it on.
-        </div>
-      </div>
-      <label class="switch" title="Room microphone">
-        <input type="checkbox" id="room_mic" aria-label="Scrobble what the room microphone hears">
-        <span class="track"></span>
-      </label>
-    </div>
+    <h2>Rooms</h2>
+    <div class="card" id="roomlist"><span class="muted">Loading&hellip;</span></div>
+    <p class="note">A room cannot tell who is listening, so it scrobbles for you only
+      once you turn it on here.</p>
 
-    <div id="audio-section" class="hidden">
-      <h2>Audio input</h2>
-      <div class="card">
-        <p class="muted small" style="margin-top:0">
-          What the server records. This is shared by everyone and takes effect at
-          the next capture.
-        </p>
-        <div class="row">
-          <label class="grow">Device
-            <select id="audio_device"></select></label>
-          <label class="grow hidden" id="audio_custom_wrap">ffmpeg device name
-            <input id="audio_custom" placeholder="hw:1,0 on Linux, :1 on macOS" spellcheck="false"></label>
+    <div id="roomform-section" class="hidden">
+      <h2 id="roomform-title">Add a room</h2>
+      <form class="card stack" id="roomform" autocomplete="off">
+        <label>Name<input id="room_name" maxlength="40" placeholder="Kitchen" required></label>
+        <label>Listens through
+          <select id="room_kind">
+            <option value="device">A microphone on this server</option>
+            <option value="stream">A camera or stream (RTSP, RTSPS, HTTP)</option>
+          </select></label>
+        <div id="room_device_fields">
+          <div class="row">
+            <label class="grow">Device
+              <select id="audio_device"></select></label>
+            <label class="grow hidden" id="audio_custom_wrap">ffmpeg device name
+              <input id="audio_custom" placeholder="hw:1,0 on Linux, :1 on macOS" spellcheck="false"></label>
+          </div>
+          <details class="small" style="margin-top:.5rem">
+            <summary class="muted">Advanced</summary>
+            <label style="margin-top:.5rem">ffmpeg input format
+              <input id="audio_backend" placeholder="alsa, pulse or avfoundation" spellcheck="false"></label>
+          </details>
         </div>
-        <details class="small" style="margin-top:.5rem">
-          <summary class="muted">Advanced</summary>
-          <label style="margin-top:.5rem">ffmpeg input format
-            <input id="audio_backend" placeholder="alsa, pulse or avfoundation" spellcheck="false"></label>
-        </details>
-        <div class="row" style="margin-top:.75rem">
-          <button id="audio_apply">Use this device</button>
-          <button id="audio_test" class="ghost">Test level</button>
-          <button id="audio_reset" class="ghost hidden">Back to the environment setting</button>
+        <div id="room_stream_fields" class="hidden">
+          <label>Camera URL
+            <input id="room_url" placeholder="rtsps://user:password@camera:7441/stream" spellcheck="false"
+                   autocapitalize="off" autocomplete="off"></label>
+          <p class="note">The camera must send audio: turn it on in the camera&rsquo;s
+            settings, and choose AAC at 16&nbsp;kHz or more where you can. A
+            restream such as go2rtc or Frigate saves the camera a connection. The
+            password stays on the server and shows as <code>***</code>; leave it
+            like that to keep it.</p>
+        </div>
+        <div class="row">
+          <button type="submit" id="room_save">Add room</button>
+          <button type="button" id="audio_test" class="ghost">Test level</button>
+          <button type="button" id="room_cancel" class="ghost hidden">Cancel</button>
         </div>
         <p id="audio_note" class="note" aria-live="polite"></p>
-        <p id="audio_source" class="note"></p>
-      </div>
+      </form>
     </div>
 
     <h2>Services</h2>
@@ -141,7 +147,7 @@
     <h2>Accounts</h2>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>User</th><th>Role</th><th>Room mic</th><th></th></tr></thead>
+        <thead><tr><th>User</th><th>Role</th><th>Rooms</th><th></th></tr></thead>
         <tbody id="users"></tbody>
       </table>
     </div>
@@ -152,7 +158,7 @@
       <label>Password<input id="new_pass" type="password" minlength="8" autocomplete="new-password"
                             placeholder="At least 8 characters" required></label>
       <label class="inline"><input type="checkbox" id="new_admin">
-        <span>Administrator <span class="muted small">(can start the room microphone and manage accounts)</span></span></label>
+        <span>Administrator <span class="muted small">(can start listening, and manage rooms and accounts)</span></span></label>
       <div class="row"><button type="submit">Create account</button>
         <span id="usernote" class="small" aria-live="polite"></span></div>
     </form>
@@ -183,7 +189,7 @@ function ago(ts) {
 const when = ts => `<time datetime="${new Date(ts * 1000).toISOString()}"
   title="${esc(full(ts))}">${esc(ago(ts))}</time>`;
 
-let me = null, listening = false, profiles = {};
+let me = null, listening = false, profiles = {}, roomsKnown = [], stopSeconds = 180;
 
 // Where a track can be looked up. Last.fm spells a space as a plus.
 const lfm = s => encodeURIComponent(s).replace(/%20/g, "+");
@@ -237,7 +243,7 @@ function showView(name) {
   if (!VIEWS.includes(name) || (name === "users" && !me?.is_admin)) name = "listen";
   $$('nav button').forEach(x => x.setAttribute("aria-selected", String(x.dataset.view === name)));
   VIEWS.forEach(v => $(`#view-${v}`).classList.toggle("hidden", v !== name));
-  if (name === "settings") { loadServices(); if (me?.is_admin) loadAudio(); }
+  if (name === "settings") { loadServices(); loadRooms(); if (me?.is_admin) loadAudio(); }
   if (name === "users") loadUsers();
 }
 $$('nav button').forEach(b => b.onclick = () => {
@@ -264,6 +270,49 @@ const meterClass = db => db < SILENT_DB ? " silent" : db < QUIET_DB ? " quiet" :
 // --- listening ---
 let lastHistory = "";
 
+// One row per room: what it hears now, and how loud.
+const levelMeter = db => `<span class="meter${meterClass(db)}" title="Peak level of the last capture">
+  <span class="bar"><span class="fill" style="width:${meterPct(db).toFixed(0)}%"></span></span>
+  <span>${esc(db)} dBFS</span></span>`;
+
+function roomState(r) {
+  if (!r.enabled) return `<span class="muted">Turned off.</span>`;
+  if (!r.running) return `<span class="muted">Not listening.</span>`;
+  if (r.last_error) return `<span class="err clamp" title="${esc(r.last_error)}">${esc(r.last_error)}</span>`;
+  if (r.level_db != null && r.level_db < SILENT_DB) return `<span class="err">&#9888; silent, check this room&rsquo;s input</span>`;
+  if (r.level_db != null && r.level_db < -70) return `<span class="muted">Quiet.</span>`;
+  if (!r.attempts) return `<span class="muted">Starting&hellip;</span>`;
+  return `<span class="muted">Listening for music&hellip;</span>`;
+}
+
+function paintRooms(list) {
+  roomsKnown = list;
+  const el = $("#rooms");
+  if (!list.length) {
+    el.innerHTML = `<span class="muted">No rooms yet.${me?.is_admin
+      ? ` <a href="#settings" class="accent">Add one in Settings</a>.` : ""}</span>`;
+    return;
+  }
+  el.innerHTML = list.map(r => {
+    const m = r.last_match;
+    const fresh = m && r.running && Date.now() / 1000 - m.ts < stopSeconds;
+    const now = m ? `${m.art_url ? `<img src="${esc(m.art_url)}" alt="" loading="lazy">` : ""}
+        <span class="grow"><b>${ext(shazamUrl(m), esc(m.title), "plain")}</b> &middot; ${esc(m.artist)}
+        <span class="muted">&middot; ${fresh ? `<span class="ok">playing now</span>` : when(m.ts)}</span></span>` : "";
+    return `<div class="room">
+      <div class="between">
+        <div class="row"><span class="dot${r.running ? (r.last_error ? " err" : " live") : ""}"
+            title="${r.running ? (r.last_error ? "Failing" : "Listening") : "Not listening"}"></span><b>${esc(r.name)}</b>
+          <span class="tag">${r.kind === "stream" ? "camera" : "microphone"}</span>
+          <span class="badge ${r.member ? "ok" : "muted"}" title="${r.member
+            ? "What this room hears is scrobbled for you" : "Turn it on for yourself under Settings"}">${r.member ? "scrobbles for you" : "not for you"}</span></div>
+        ${r.running && r.level_db != null ? levelMeter(r.level_db) : ""}
+      </div>
+      <div class="room-now small">${now && !(r.running && r.last_error) ? now : roomState(r)}</div>
+    </div>`;
+  }).join("");
+}
+
 function paintStatus(st) {
   const parts = [];
   if (st.services.length) {
@@ -273,21 +322,9 @@ function paintStatus(st) {
     parts.push(`<span class="warn">no service connected &middot;
       <a href="#settings" class="accent">connect one</a></span>`);
   }
-  // Only while it is running: last_level_db is the last capture, and showing it
-  // after a stop reads as a live level that has frozen.
-  if (st.level_db != null && st.listening) {
-    parts.push(`<span class="meter${meterClass(st.level_db)}"
-        title="Peak level of the last capture">
-      <span class="bar"><span class="fill"
-        style="width:${meterPct(st.level_db).toFixed(0)}%"></span></span>
-      <span>input ${esc(st.level_db)} dBFS</span></span>`);
-    if (st.level_db < SILENT_DB) {
-      parts.push(`<span class="err">&#9888; silent, check the audio input</span>`);
-    }
-  }
   if (st.attempts) {
     const lastTry = st.last_attempt ? ` &middot; last ${esc(ago(st.last_attempt))}` : "";
-    parts.push(`<span title="Captures since the listener started">${st.attempts} listens${lastTry}</span>`);
+    parts.push(`<span title="Captures in every room since listening started">${st.attempts} listens${lastTry}</span>`);
   }
   $("#status").innerHTML = parts.join("");
 }
@@ -297,8 +334,8 @@ function paintNow(st) {
   const el = $("#now");
   if (!m) {
     let text;
-    if (st.last_error && listening) text = `<span class="err">${esc(st.last_error)}</span>`;
-    else if (!listening && !micOn) text = `<span class="muted">Not listening.</span>`;
+    // A room's own error shows in its row above.
+    if (!listening && !micOn) text = `<span class="muted">Not listening.</span>`;
     else if (!st.attempts) text = `<span class="muted">Starting&hellip;</span>`;
     else text = `<span class="muted">No match yet. Listening for music&hellip;</span>`;
     el.innerHTML = `<div class="art-empty" aria-hidden="true">&#9834;</div><div>${text}</div>`;
@@ -306,7 +343,7 @@ function paintNow(st) {
   }
   const stopAfter = st.stop_seconds || 180;
   const live = (listening || micOn) && Date.now() / 1000 - m.ts < stopAfter;
-  const source = m.source === "browser" ? "this device" : "room microphone";
+  const source = m.room || (m.source === "browser" ? "this device" : "room microphone");
   el.innerHTML = `
     ${m.art_url ? `<img src="${esc(m.art_url)}" alt="">`
                 : `<div class="art-empty" aria-hidden="true">&#9834;</div>`}
@@ -342,8 +379,8 @@ function paintHistory(rows) {
     <td><b>${ext(shazamUrl(r), esc(r.title), "plain")}</b><br>${ext(lastfmArtistUrl(r), esc(r.artist), "plain")}
         ${r.album ? `<br><span class="muted small album">${esc(r.album)}</span>` : ""}
         <div class="sent-inline">${badges(r.services)}</div></td>
-    <td class="when muted">${when(r.ts)}${r.source === "browser"
-        ? `<br><span class="small">via this device</span>` : ""}</td>
+    <td class="when muted">${when(r.ts)}${r.room || r.source === "browser"
+        ? `<br><span class="small">via ${esc(r.room || "this device")}</span>` : ""}</td>
     <td class="sent">${badges(r.services)}</td></tr>`).join("");
   // Leave the DOM alone when nothing changed, so a text selection or an image
   // does not flicker every five seconds.
@@ -360,16 +397,20 @@ async function refresh() {
     listening = st.listening;
     profiles = st.profiles || {};
     $("#dot").className = "dot" + (listening ? " live" : "");
-    $("#dot").title = listening ? "Listening to the room" : "Not listening";
+    const live = (st.rooms || []).filter(r => r.running).length;
+    $("#dot").title = listening ? `Listening in ${live} room${live === 1 ? "" : "s"}` : "Not listening";
     const t = $("#toggle");
     t.classList.remove("busy");
     t.textContent = listening ? "Stop listening" : "Start listening";
     t.classList.toggle("stop", listening);
     t.disabled = !me?.is_admin;
     $("#adminnote").textContent = me?.is_admin
-      ? "" : "Only an administrator can start or stop the room microphone.";
-    $("#lasterror").textContent = (st.last_error && st.last_match) ? st.last_error : "";
+      ? "" : "Only an administrator can start or stop listening.";
+    $("#lasterror").textContent = st.rate_limited_for
+      ? `Shazam is limiting requests, so every room waits ${st.rate_limited_for}s.` : "";
     paintStatus(st);
+    stopSeconds = st.stop_seconds || 180;
+    paintRooms(st.rooms || []);
     paintNow(st);
     paintHistory(await api("api/recent?limit=50"));
   } finally { refreshing = false; }
@@ -378,7 +419,7 @@ async function refresh() {
 $("#toggle").onclick = () => busy($("#toggle"), async () => {
   try {
     const r = await send("api/listen", "POST", {on: !listening});
-    toast(r.listening ? "Listening to the room" : "Stopped listening", "ok");
+    toast(r.listening ? "Listening" : "Stopped listening", "ok");
     await refresh();
   } catch (e) { toast(e.message, "err"); }
 });
@@ -588,7 +629,6 @@ async function loadServices() {
   let s;
   try { s = await api("api/services"); }
   catch (e) { $("#services").innerHTML = `<span class="err">${esc(e.message)}</span>`; return; }
-  $("#room_mic").checked = !!me.room_mic;
   paintToken();
   $("#services").innerHTML = Object.keys(TITLES).map(name => {
     const info = s[name];
@@ -652,36 +692,98 @@ async function loadServices() {
   if (start) start.onclick = lastfmConnect;
 }
 
-// --- the server's audio input, for an administrator ---
-const OTHER = "__other__";
-let audioState = null;
+// --- rooms ---
+async function loadRooms() {
+  let list;
+  try { list = await api("api/rooms"); }
+  catch (e) { $("#roomlist").innerHTML = `<span class="err">${esc(e.message)}</span>`; return; }
+  roomsKnown = list;
+  if (!list.length) {
+    $("#roomlist").innerHTML = `<span class="muted">No rooms yet.${me.is_admin ? " Add one below." : ""}</span>`;
+    return;
+  }
+  $("#roomlist").innerHTML = list.map(r => `<div class="service">
+    <div class="between">
+      <div class="grow"><b>${esc(r.name)}</b> <span class="tag">${r.kind === "stream" ? "camera" : "microphone"}</span>
+        ${r.enabled ? "" : `<span class="badge muted">turned off</span>`}
+        ${me.is_admin && r.input ? `<div class="small muted" style="margin-top:.25rem"><code>${esc(r.input)}</code></div>` : ""}</div>
+      <label class="switch" title="Scrobble what ${esc(r.name)} hears for me">
+        <input type="checkbox" data-member="${r.id}" ${r.member ? "checked" : ""}
+               aria-label="Scrobble what ${esc(r.name)} hears for me"><span class="track"></span></label>
+    </div>
+    ${me.is_admin ? `<div class="row" style="margin-top:.5rem">
+      <button class="ghost small" data-enable="${r.id}">${r.enabled ? "Turn off" : "Turn on"}</button>
+      <button class="ghost small" data-edit="${r.id}">Edit</button>
+      <button class="danger small" data-remove="${r.id}">Remove</button></div>` : ""}
+  </div>`).join("");
+
+  $$("[data-member]").forEach(box => box.onchange = async () => {
+    const r = list.find(x => x.id === +box.dataset.member), on = box.checked;
+    box.disabled = true;
+    try {
+      await send(`api/rooms/${r.id}/member`, "PUT", {on});
+      toast(on ? `${r.name} now scrobbles for you` : `${r.name} no longer scrobbles for you`, "ok");
+      refresh();
+    } catch (e) { box.checked = !on; toast(e.message, "err"); }
+    finally { box.disabled = false; }
+  });
+  $$("[data-enable]").forEach(b => b.onclick = () => busy(b, async () => {
+    const r = list.find(x => x.id === +b.dataset.enable);
+    try {
+      await send(`api/rooms/${r.id}`, "PUT", {enabled: !r.enabled});
+      toast(r.enabled ? `${r.name} turned off` : `${r.name} turned on`, "ok");
+      await loadRooms(); refresh();
+    } catch (e) { toast(e.message, "err"); }
+  }));
+  $$("[data-edit]").forEach(b => b.onclick = () => editRoom(list.find(x => x.id === +b.dataset.edit)));
+  $$("[data-remove]").forEach(b => b.onclick = () => {
+    const r = list.find(x => x.id === +b.dataset.remove);
+    if (!confirm(`Remove ${r.name}? Its scrobbles stay in everyone's history.`)) return;
+    busy(b, async () => {
+      try {
+        await api(`api/rooms/${r.id}`, {method: "DELETE"});
+        if (editing?.id === r.id) resetRoomForm();
+        toast(`${r.name} removed`); await loadRooms(); refresh();
+      } catch (e) { toast(e.message, "err"); }
+    });
+  });
+}
+
+// The form adds a room, or edits the one in `editing`.
+const OTHER = "__other__", ENV = "";
+let audioState = null, editing = null;
+
+function roomKind() { return $("#room_kind").value; }
+function paintKind() {
+  $("#room_device_fields").classList.toggle("hidden", roomKind() !== "device");
+  $("#room_stream_fields").classList.toggle("hidden", roomKind() !== "stream");
+  $("#audio_note").textContent = "";
+}
+$("#room_kind").onchange = paintKind;
 
 function audioChoice() {
   const sel = $("#audio_device");
   return sel.value === OTHER ? $("#audio_custom").value.trim() : sel.value;
 }
 
-function paintAudio(a) {
-  audioState = a;
+function paintDevices(chosen) {
+  const a = audioState || {devices: [], backend: "", device: ""};
   const sel = $("#audio_device");
-  const known = a.devices.some(d => d.device === a.device);
-  sel.innerHTML = a.devices.map(d =>
-    `<option value="${esc(d.device)}" ${d.device === a.device ? "selected" : ""}>${esc(d.label)} (${esc(d.device)})</option>`).join("")
+  const known = chosen === ENV || a.devices.some(d => d.device === chosen);
+  sel.innerHTML = `<option value="${ENV}" ${chosen === ENV ? "selected" : ""}>Default from the environment (${esc(a.backend)} ${esc(a.device)})</option>`
+    + a.devices.map(d =>
+      `<option value="${esc(d.device)}" ${d.device === chosen ? "selected" : ""}>${esc(d.label)} (${esc(d.device)})</option>`).join("")
     + `<option value="${OTHER}" ${known ? "" : "selected"}>${a.devices.length ? "Other…" : "Type a device name"}</option>`;
-  $("#audio_custom").value = known ? "" : a.device;
+  $("#audio_custom").value = known ? "" : chosen;
   $("#audio_custom_wrap").classList.toggle("hidden", known);
-  $("#audio_backend").value = a.backend;
-  $("#audio_reset").classList.toggle("hidden", !a.saved);
-  $("#audio_source").innerHTML = a.saved
-    ? `Chosen here. The environment says <code>AUDIO_DEVICE=${esc(a.env_device)}</code>, which is ignored while this is set.`
-    : `From the environment: <code>AUDIO_BACKEND=${esc(a.backend)}</code> <code>AUDIO_DEVICE=${esc(a.device)}</code>.`
-      + (a.devices.length ? "" : " ffmpeg could not list devices for this format, so type the name.");
 }
 
 async function loadAudio() {
-  $("#audio-section").classList.remove("hidden");
-  try { paintAudio(await api("api/audio")); }
-  catch (e) { $("#audio_source").innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+  $("#roomform-section").classList.remove("hidden");
+  try { audioState = await api("api/audio"); }
+  catch (e) { $("#audio_note").className = "note err"; $("#audio_note").textContent = e.message; }
+  if (!editing) paintDevices(ENV);
+  $("#audio_backend").placeholder = audioState?.backend || "alsa, pulse or avfoundation";
 }
 
 $("#audio_device").onchange = () => {
@@ -691,41 +793,64 @@ $("#audio_device").onchange = () => {
   $("#audio_note").textContent = "";
 };
 
-$("#audio_apply").onclick = () => busy($("#audio_apply"), async () => {
-  const device = audioChoice();
-  if (!device) { $("#audio_note").className = "note err"; $("#audio_note").textContent = "Choose a device first."; return; }
-  const backend = $("#audio_backend").value.trim();
-  try {
-    const a = await send("api/audio", "PUT", {device, backend: backend !== audioState?.backend ? backend : ""});
-    paintAudio({...a, devices: audioState?.devices || []});
-    $("#audio_note").className = "note ok";
-    $("#audio_note").textContent = `Recording from ${device} from the next capture on.`;
-    toast("Audio input changed", "ok");
-    refresh();
-  } catch (e) { $("#audio_note").className = "note err"; $("#audio_note").textContent = e.message; }
-});
+function editRoom(r) {
+  editing = r;
+  $("#roomform-title").textContent = `Edit ${r.name}`;
+  $("#room_save").textContent = "Save changes";
+  $("#room_cancel").classList.remove("hidden");
+  $("#room_name").value = r.name;
+  $("#room_kind").value = r.kind;
+  $("#room_url").value = r.url || "";
+  $("#audio_backend").value = r.backend || "";
+  paintDevices(r.device || ENV);
+  paintKind();
+  $("#roomform-section").scrollIntoView({behavior: "smooth", block: "start"});
+  $("#room_name").focus({preventScroll: true});
+}
+
+function resetRoomForm() {
+  editing = null;
+  $("#roomform").reset();
+  $("#roomform-title").textContent = "Add a room";
+  $("#room_save").textContent = "Add room";
+  $("#room_cancel").classList.add("hidden");
+  paintDevices(ENV);
+  paintKind();
+}
+$("#room_cancel").onclick = resetRoomForm;
+
+function roomBody() {
+  const body = {name: $("#room_name").value.trim(), kind: roomKind()};
+  if (body.kind === "stream") body.url = $("#room_url").value.trim();
+  else { body.device = audioChoice(); body.backend = $("#audio_backend").value.trim(); }
+  return body;
+}
+
+$("#roomform").onsubmit = e => {
+  e.preventDefault();
+  const note = $("#audio_note");
+  busy($("#room_save"), async () => {
+    try {
+      const body = roomBody();
+      const r = editing ? await send(`api/rooms/${editing.id}`, "PUT", body)
+                        : await send("api/rooms", "POST", body);
+      toast(editing ? `${r.name} saved` : `${r.name} added. It scrobbles for you; others choose it in Settings.`, "ok");
+      resetRoomForm();
+      await loadRooms(); refresh();
+    } catch (err) { note.className = "note err"; note.textContent = err.message; }
+  });
+};
 
 $("#audio_test").onclick = () => busy($("#audio_test"), async () => {
   const note = $("#audio_note");
   note.className = "note"; note.textContent = "Recording three seconds…";
   try {
-    const r = await send("api/audio/test", "POST",
-                         {device: audioChoice(), backend: $("#audio_backend").value.trim()});
+    const r = await send("api/audio/test", "POST", {...roomBody(), room_id: editing?.id});
     note.className = "note " + (r.silent ? "err" : "ok");
     note.textContent = r.silent
-      ? `Peak ${r.level_db} dBFS: that device is silent. Play something, or pick another.`
+      ? `Peak ${r.level_db} dBFS: that input is silent. Play something, or check its audio.`
       : `Peak ${r.level_db} dBFS: it hears sound.` + (r.level_db < -40 ? " Quiet, though. Move it closer or raise the volume." : "");
   } catch (e) { note.className = "note err"; note.textContent = e.message; }
-});
-
-$("#audio_reset").onclick = () => busy($("#audio_reset"), async () => {
-  try {
-    const a = await api("api/audio", {method: "DELETE"});
-    paintAudio({...a, devices: audioState?.devices || []});
-    $("#audio_note").textContent = "";
-    toast("Back to the environment setting", "ok");
-    refresh();
-  } catch (e) { toast(e.message, "err"); }
 });
 
 async function lastfmConnect() {
@@ -747,16 +872,6 @@ async function lastfmConnect() {
     } catch (e) { step.className = "feedback err"; step.textContent = e.message; }
   });
 }
-
-$("#room_mic").onchange = async e => {
-  const on = e.target.checked;
-  e.target.disabled = true;
-  try {
-    me = {...me, ...await send("api/me", "PUT", {room_mic: on})};
-    toast(on ? "The room microphone now scrobbles for you" : "Room microphone off for you", "ok");
-  } catch (err) { e.target.checked = !on; toast(err.message, "err"); }
-  finally { e.target.disabled = false; }
-};
 
 // --- API token: hidden until asked for, so a screen share does not leak it ---
 let tokenShown = false;
@@ -809,10 +924,12 @@ $("#pwform").onsubmit = e => {
 async function loadUsers() {
   let list;
   try { list = await api("api/users"); } catch (e) { toast(e.message, "err"); return; }
+  if (!roomsKnown.length) { try { roomsKnown = await api("api/rooms"); } catch {} }
+  const roomName = id => roomsKnown.find(r => r.id === id)?.name;
   $("#users").innerHTML = list.map(u => `<tr>
     <td><b>${esc(u.username)}</b>${u.id === me.id ? ` <span class="muted small">(you)</span>` : ""}</td>
     <td class="muted">${u.is_admin ? "administrator" : "user"}</td>
-    <td class="muted">${u.room_mic ? "yes" : "no"}</td>
+    <td class="muted">${esc(u.rooms.map(roomName).filter(Boolean).join(", ")) || "none"}</td>
     <td>${u.id === me.id ? "" : `<div class="row nowrap">
       <button class="ghost small" data-pw="${u.id}" aria-expanded="false">Set password</button>
       <button class="danger small" data-del="${u.id}" data-name="${esc(u.username)}">Remove</button></div>`}</td>

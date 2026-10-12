@@ -9,7 +9,6 @@ import asyncio
 import contextlib
 import logging
 import pathlib
-import re
 import secrets
 
 import pylast
@@ -17,7 +16,7 @@ import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
-from . import accounts, config, db, scrobble
+from . import accounts, config, db, rooms, scrobble
 from . import __version__
 from .listener import (SILENT_DBFS, Listener, RateLimited, decode_to_wav, list_devices,
                        peak_dbfs, probe_level)
@@ -38,8 +37,7 @@ async def _lifespan(app):
     removed = db.delete_orphaned_matches()
     if removed:
         log.info("Removed %d matches that no account scrobbled.", removed)
-    # A device chosen in Settings outranks the environment, see /api/audio.
-    config.set_audio(db.get_setting("audio_backend"), db.get_setting("audio_device"))
+    await listener.sync_rooms()
     if config.LISTEN_ON_START:
         listener.start()
     yield
@@ -92,7 +90,7 @@ def require_admin(request: Request) -> dict:
 
 def _public(user) -> dict:
     return {"id": user["id"], "username": user["username"],
-            "is_admin": bool(user["is_admin"]), "room_mic": bool(user["room_mic"])}
+            "is_admin": bool(user["is_admin"]), "rooms": rooms.rooms_of(user["id"])}
 
 
 # --- sign in ----------------------------------------------------------------
@@ -128,8 +126,12 @@ async def me(user: dict = Depends(require_user)):
 
 @app.put("/api/me")
 async def update_me(body: dict, user: dict = Depends(require_user)):
-    changed = accounts.update_user(user["id"], room_mic=body.get("room_mic"))
-    return _public(changed)
+    """`room_mic` is from before rooms, when there was one. It now joins or
+    leaves every room. Choose single rooms with /api/rooms/{id}/member."""
+    if body.get("room_mic") is not None:
+        for room in rooms.list_rooms():
+            rooms.set_member(room["id"], user["id"], bool(body["room_mic"]))
+    return _public(user)
 
 
 @app.post("/api/me/password")
@@ -238,30 +240,59 @@ async def lastfm_finish(body: dict, user: dict = Depends(require_user)):
 
 # --- listener and history ---------------------------------------------------
 
+def _room_public(row, user, mine) -> dict:
+    """A room as the page shows it. Where it records from is for an
+    administrator, and a camera password is never sent."""
+    live = listener.rooms.get(row["id"])
+    out = {"id": row["id"], "name": row["name"], "kind": row["kind"],
+           "enabled": bool(row["enabled"]), "member": row["id"] in mine,
+           "running": bool(live and live.running),
+           "last_match": live.last_match if live else None,
+           "last_error": live.last_error if live else None,
+           "level_db": live.last_level_db if live else None,
+           "attempts": live.attempts if live else 0,
+           "last_attempt": live.last_attempt if live else None}
+    if user["is_admin"]:
+        out.update(backend=row["backend"], device=row["device"],
+                   url=rooms.mask_url(row["url"]),
+                   input=live.describe() if live else None)
+    return out
+
+
+def _rooms_for(user) -> list[dict]:
+    mine = set(rooms.rooms_of(user["id"]))
+    return [_room_public(row, user, mine) for row in rooms.list_rooms()]
+
+
 @app.get("/api/status")
 async def status(user: dict = Depends(require_user)):
     credentials = accounts.get_credentials(user["id"])
+    # The flat fields describe the first room, as they described the single
+    # microphone before rooms, so an existing Home Assistant sensor still reads.
+    first = listener.first_room()
+    room_list = _rooms_for(user)
     return {
         "version": __version__,
         "listening": listener.listening,
         "started_at": listener.started_at,
         "last_match": listener.last_match_for(user["id"]),
-        "last_error": listener.last_error,
-        "level_db": listener.last_level_db,
-        "attempts": listener.attempts,
-        "last_attempt": listener.last_attempt,
+        "last_error": first.last_error if first else None,
+        "level_db": first.last_level_db if first else None,
+        "attempts": sum(r["attempts"] for r in room_list),
+        "last_attempt": max((r["last_attempt"] or 0 for r in room_list), default=0) or None,
         "services": scrobble.enabled_services(credentials),
         "profiles": scrobble.profile_urls(credentials),
         "interval": config.MATCH_INTERVAL,
         "stop_seconds": config.NOW_PLAYING_STOP_SECONDS,
-        "room_mic": bool(user["room_mic"]),
-        "audio": {"backend": config.AUDIO_BACKEND, "device": config.AUDIO_DEVICE},
+        "rate_limited_for": round(listener.rate_limited_for()),
+        "rooms": room_list,
     }
 
 
 @app.post("/api/listen")
 async def listen(body: dict, user: dict = Depends(require_admin)):
-    """Only an administrator starts or stops the shared microphone."""
+    """Only an administrator starts or stops listening, in every room that is
+    turned on."""
     if body.get("on"):
         listener.start()
     else:
@@ -299,63 +330,102 @@ async def match(request: Request, user: dict = Depends(require_user)):
     return {"match": found, "level_db": peak_dbfs(wav)}
 
 
-# --- the audio input, for an administrator -----------------------------------
+# --- rooms ---------------------------------------------------------------------
 
-def _audio_state() -> dict:
-    saved = db.get_setting("audio_device") or db.get_setting("audio_backend")
-    return {"backend": config.AUDIO_BACKEND, "device": config.AUDIO_DEVICE,
-            "env_backend": config.ENV_AUDIO_BACKEND, "env_device": config.ENV_AUDIO_DEVICE,
-            "saved": bool(saved), "listening": listener.listening}
+def _room_fields(body: dict) -> dict:
+    return {k: body.get(k) for k in ("name", "kind", "backend", "device", "url", "enabled")
+            if k in body}
 
+
+@app.get("/api/rooms")
+async def list_rooms(user: dict = Depends(require_user)):
+    return _rooms_for(user)
+
+
+@app.post("/api/rooms")
+async def add_room(body: dict, admin: dict = Depends(require_admin)):
+    """Add a room. Everybody who chooses it receives what it hears, so it starts
+    with nobody but the administrator who added it."""
+    try:
+        row = rooms.add_room(**_room_fields(body))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    rooms.set_member(row["id"], admin["id"], True)
+    await listener.sync_rooms()
+    log.info("room %r added by %s", row["name"], admin["username"])
+    return _room_public(row, admin, set(rooms.rooms_of(admin["id"])))
+
+
+@app.put("/api/rooms/{room_id}")
+async def edit_room(room_id: int, body: dict, admin: dict = Depends(require_admin)):
+    """Change a room. A new input is used from the room's next capture."""
+    try:
+        row = rooms.update_room(room_id, **_room_fields(body))
+    except LookupError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    await listener.sync_rooms()
+    return _room_public(row, admin, set(rooms.rooms_of(admin["id"])))
+
+
+@app.delete("/api/rooms/{room_id}")
+async def remove_room(room_id: int, admin: dict = Depends(require_admin)):
+    """The history keeps the room's name. Only listening there stops."""
+    rooms.delete_room(room_id)
+    await listener.sync_rooms()
+    return {"ok": True}
+
+
+@app.put("/api/rooms/{room_id}/member")
+async def room_member(room_id: int, body: dict, user: dict = Depends(require_user)):
+    """Each person chooses which rooms scrobble for them."""
+    if rooms.get_room(room_id) is None:
+        raise HTTPException(404, "no such room")
+    rooms.set_member(room_id, user["id"], bool(body.get("on")))
+    return {"rooms": rooms.rooms_of(user["id"])}
+
+
+# --- audio inputs, for an administrator -------------------------------------------
 
 @app.get("/api/audio")
 async def audio(admin: dict = Depends(require_admin)):
-    """The current capture device, and the ones ffmpeg can see."""
-    return {**_audio_state(), "devices": await list_devices(config.AUDIO_BACKEND)}
-
-
-@app.put("/api/audio")
-async def set_audio(body: dict, admin: dict = Depends(require_admin)):
-    """Choose the capture device. It is kept in the database and outranks the
-    environment, and the next capture already uses it."""
-    device = str(body.get("device") or "").strip()
-    backend = str(body.get("backend") or "").strip() or None
-    if not device:
-        raise HTTPException(400, "choose a device")
-    if backend and not re.fullmatch(r"[a-z0-9_]+", backend):
-        raise HTTPException(400, "that is not an ffmpeg input format")
-    db.set_setting("audio_device", device)
-    if backend:
-        db.set_setting("audio_backend", backend)
-    config.set_audio(backend, device)
-    listener.reset_input()
-    log.info("audio input changed by %s: %s %s", admin["username"],
-             config.AUDIO_BACKEND, config.AUDIO_DEVICE)
-    return _audio_state()
-
-
-@app.delete("/api/audio")
-async def reset_audio(admin: dict = Depends(require_admin)):
-    """Forget the choice made here and go back to the environment."""
-    db.set_setting("audio_device", None)
-    db.set_setting("audio_backend", None)
-    config.set_audio(config.ENV_AUDIO_BACKEND, config.ENV_AUDIO_DEVICE)
-    listener.reset_input()
-    return _audio_state()
+    """The devices ffmpeg can see, and the device the environment names, which a
+    device room with no device of its own records from."""
+    return {"backend": config.AUDIO_BACKEND, "device": config.AUDIO_DEVICE,
+            "devices": await list_devices(config.AUDIO_BACKEND)}
 
 
 @app.post("/api/audio/test")
 async def test_audio(body: dict, admin: dict = Depends(require_admin)):
-    """Record three seconds from a device and report the peak, so a silent
-    device is found before it is chosen."""
-    device = str(body.get("device") or config.AUDIO_DEVICE).strip()
-    backend = str(body.get("backend") or config.AUDIO_BACKEND).strip()
+    """Record three seconds from a device or a camera and report the peak, so a
+    silent input is found before it is chosen.
+
+    With `room_id`, a camera URL whose password is still masked uses the saved
+    password, and fields left out use the room's own."""
+    saved = rooms.get_room(body["room_id"]) if body.get("room_id") else None
+    kind = body.get("kind") or (saved or {}).get("kind") or "device"
+    url = None
     try:
-        level = await probe_level(backend, device)
+        if kind == "stream":
+            typed = str(body.get("url") or (saved or {}).get("url") or "")
+            url = rooms.check_url(rooms.merge_url(typed, (saved or {}).get("url")))
+            level = await probe_level(url=url)
+        else:
+            # A field sent empty means the environment's device, as it does
+            # when the room is saved. Only a field left out means the room's.
+            def pick(key, default):
+                value = body[key] if key in body else (saved or {}).get(key)
+                return str(value or default).strip()
+            backend = pick("backend", config.AUDIO_BACKEND)
+            device = pick("device", config.AUDIO_DEVICE)
+            level = await probe_level(backend, device)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     except Exception as e:
         hint = (" The listener may be holding the device: stop listening and try again."
-                if listener.listening else "")
-        raise HTTPException(400, f"{e}{hint}")
+                if listener.listening and kind != "stream" else "")
+        raise HTTPException(400, f"{rooms.redact(str(e), url)}{hint}")
     return {"level_db": level, "silent": level < SILENT_DBFS}
 
 
@@ -396,8 +466,7 @@ async def edit_user(user_id: int, body: dict, admin: dict = Depends(require_admi
         raise HTTPException(400, "keep at least one administrator")
     try:
         changed = accounts.update_user(
-            user_id, password=body.get("password"),
-            is_admin=body.get("is_admin"), room_mic=body.get("room_mic"))
+            user_id, password=body.get("password"), is_admin=body.get("is_admin"))
     except ValueError as e:
         raise HTTPException(400, str(e))
     return _public(changed)

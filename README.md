@@ -2,11 +2,13 @@
 
 # scrobSter
 
-Self-hosted background-audio scrobbler. It listens to an audio input (mic or line-in), identifies songs with Shazam, and scrobbles them to Last.fm, Libre.fm, ListenBrainz, and Maloja. Point it at a radio, a TV, or the room.
+Self-hosted background-audio scrobbler. It listens to audio inputs (a mic, a line-in, or the audio of your security cameras), identifies songs with Shazam, and scrobbles them to Last.fm, Libre.fm, ListenBrainz, and Maloja. Point it at a radio, a TV, or every room in the house.
 
 ## How it works
 
-Every 15 seconds, ffmpeg records a 12-second chunk from your audio device.
+Every 15 seconds, ffmpeg records a 12-second chunk in each room. A room is one
+input: a microphone on the server, or a camera's RTSP or RTSPS stream. See
+Rooms and cameras.
 [shazamio](https://github.com/shazamio/shazamio) builds an audio signature
 locally and asks the Shazam API for a match.
 
@@ -47,9 +49,55 @@ All of this is best effort. If MusicBrainz or Maloja fails, the scrobble still
 goes through without it.
 
 Each person has an account and connects their own scrobbling services in
-Settings. The room microphone is shared, so every user chooses whether to
+Settings. A room is shared, so every user chooses, room by room, whether to
 receive what it hears. A microphone in a browser is different: that listen
 belongs to the person who recorded it, and goes only to them.
+
+## Rooms and cameras
+
+An administrator adds rooms under Settings. Each room has a name, which the
+history and the Listening page show, and one input:
+
+- **A microphone on this server.** Pick a device, or leave the default, which
+  is `AUDIO_DEVICE`.
+- **A camera or stream.** Give its URL: `rtsp://`, `rtsps://`, `http://` or
+  `https://`. ffmpeg asks an RTSP camera for its audio only, over TCP, so the
+  video is never sent.
+
+**Test level** records three seconds and reports the peak, before you save. A
+camera with its audio turned off says so.
+
+Each room runs its own capture loop, and the Listening page shows each room's
+level and what it hears. Every user turns on the rooms they want under
+Settings. A room scrobbles for nobody until then, except for the administrator
+who added it. A song that two rooms hear at once is still one play for
+someone who receives both.
+
+Tips for cameras:
+
+- **Turn the audio on**, in the camera and in the stream you use. A camera's
+  low-resolution substream is fine if it carries audio.
+- **Choose AAC at 16 kHz or more** where the camera offers it. G.711 at 8 kHz
+  loses everything above 4 kHz, and Shazam's fingerprint uses up to about
+  5.5 kHz, so it matches less often.
+- **Use a restream** if you have one, for example go2rtc or Frigate at
+  `rtsp://host:8554/<camera>`. Many cameras accept only a few connections.
+- **UniFi Protect** shares an RTSPS URL per camera, on port 7441. Its
+  self-signed certificate is accepted.
+- **The camera password stays on the server.** The page shows it as `***`,
+  and leaving `***` in place keeps it when you edit the URL. Errors are
+  cleaned of it before anyone sees them.
+- **Audio stays on your network.** Each clip lives in a temporary file. Only
+  the fingerprint, computed locally, goes to Shazam.
+
+**Shazam's rate limit is shared.** Every room asks from the same address, so
+requests take turns: at most one per `RECOGNITION_GAP_SECONDS`, whatever the
+number of rooms. A silent room asks nothing. A 429 pauses every room, from one
+minute up to ten.
+
+An upgrade from 0.2 keeps working as before. The microphone becomes the first
+room, named "Room microphone", with the device chosen in Settings. Everyone who
+received the microphone receives that room.
 
 ## Requirements
 
@@ -99,7 +147,7 @@ under Users, and each person connects their own services.
   application, not a person, so one registration serves everybody. Each user
   then authorizes Last.fm in the browser under Settings, which stores a session
   key for that user alone.
-- **Only an administrator starts or stops the shared microphone.**
+- **Only an administrator starts or stops listening**, and adds or changes rooms.
 - **Each user gets an API token** in Settings, for Home Assistant and scripts.
 
 Open http://localhost:8000. Toggle listening from the page.
@@ -117,9 +165,10 @@ A service is enabled when all of its variables are set.
 | Variable | Default | Purpose |
 |---|---|---|
 | `AUDIO_BACKEND` | `avfoundation` (macOS) / `alsa` (Linux) | ffmpeg input format |
-| `AUDIO_DEVICE` | `:0` (macOS) / `default` (Linux) | ffmpeg input device. An administrator can pick another under Settings, and that choice outranks this |
+| `AUDIO_DEVICE` | `:0` (macOS) / `default` (Linux) | ffmpeg input device for a microphone room that names no device of its own, the first room included |
 | `CHUNK_SECONDS` | `12` | recorded seconds per match attempt; values above 14 are capped |
-| `MATCH_INTERVAL` | `15` | minimum seconds per cycle; increase if rate-limited |
+| `MATCH_INTERVAL` | `15` | minimum seconds per cycle in each room; increase if rate-limited |
+| `RECOGNITION_GAP_SECONDS` | `4` | minimum seconds between two Shazam requests, across every room and browser clip |
 | `RESCROBBLE_MINUTES` | `30` | fallback cooldown, used only when a match has no offset |
 | `NOW_PLAYING_STOP_SECONDS` | `180` | clear the playing-now mark after this long with no match |
 | `DB_PATH` | `scrobster.db` | SQLite history file |
@@ -129,7 +178,7 @@ A service is enabled when all of its variables are set.
 | `TRUST_INGRESS` | `1` | treat Home Assistant ingress requests as the owner, with no second sign-in |
 | `INGRESS_IP` | `172.30.32.2` | the address ingress requests come from |
 | `API_TOKEN` | unset | optional shared token that acts as the owner. Each user also has a personal token |
-| `LISTEN_ON_START` | `1` | start the capture loop at boot |
+| `LISTEN_ON_START` | `1` | start listening in every room that is turned on at boot |
 | `LASTFM_API_KEY` `LASTFM_API_SECRET` | unset | identifies this application to Last.fm, for every user. Create a key at https://www.last.fm/api/account/create |
 
 These seed the first account only. After that, each user manages their own under
@@ -158,11 +207,11 @@ revoke the key in your Last.fm account settings.
 
 ## Find your audio device
 
-The easy way: sign in as an administrator, open Settings, and use **Audio
-input**. It lists the devices ffmpeg can see, and **Test level** records three
-seconds from the one you pick and reports the peak, so a silent device is
-caught before you choose it. The choice is saved and outranks `AUDIO_DEVICE`.
-The steps below do the same by hand.
+The easy way: sign in as an administrator, open Settings, and edit a room, or
+add one. The form lists the devices ffmpeg can see, and **Test level** records
+three seconds from the one you pick and reports the peak, so a silent device is
+caught before you choose it. A room's own device outranks `AUDIO_DEVICE`. The
+steps below do the same by hand.
 
 Step 1. List the devices.
 
@@ -191,8 +240,8 @@ ffmpeg -i /tmp/t.wav -af volumedetect -f null - 2>&1 | grep mean_volume
 Play music, then read the result. A value near -91 dB is digital silence, and
 that device is the wrong one. A value near -20 dB is good.
 
-The web page shows the same level as `input <n> dBFS` while the room
-microphone is listening. It warns you when the device is silent.
+The Listening page shows each room's level while it listens, and warns you
+when a room is silent.
 
 Index 0 is not always the microphone. On a Mac with virtual audio software, index
 0 is often a loopback device that stays silent until you route audio through it.
@@ -273,14 +322,17 @@ through Home Assistant ingress.
 | Endpoint | Purpose |
 |---|---|
 | `POST /api/login` `{username, password}` | sign in, sets a session cookie |
-| `GET /api/status` | version, listening state, last match, input level (`level_db`), profile links |
-| `POST /api/listen` `{"on": true}` | start or stop the shared microphone. Administrator only |
+| `GET /api/status` | version, listening state, last match, profile links, and `rooms`: each room's state, level and last match. `level_db` and `last_error` describe the first room |
+| `POST /api/listen` `{"on": true}` | start or stop listening in every room that is turned on. Administrator only |
 | `POST /api/match` (raw audio body) | identify one clip and scrobble it for the caller |
 | `GET /api/recent?limit=50` | that user's scrobble history |
-| `GET /api/me`, `PUT /api/me` | account details, and the room microphone choice |
-| `GET/PUT/DELETE /api/services/{name}` | that user's service credentials |
-| `GET/PUT/DELETE /api/audio` | the capture device, with the ones ffmpeg can see. Administrator only |
-| `POST /api/audio/test` `{device}` | record three seconds and report the peak level. Administrator only |
+| `GET /api/me` | account details, with the rooms that scrobble for you |
+| `GET /api/services`, `PUT/DELETE /api/services/{name}` | that user's service credentials |
+| `GET /api/rooms` | the rooms. An administrator also sees each input, with a camera password masked |
+| `POST /api/rooms`, `PUT/DELETE /api/rooms/{id}` `{name, kind, device, backend, url, enabled}` | add, change or remove a room. `kind` is `device` or `stream`. Administrator only |
+| `PUT /api/rooms/{id}/member` `{"on": true}` | receive what that room hears, or stop |
+| `GET /api/audio` | the devices ffmpeg can see, and the environment's default. Administrator only |
+| `POST /api/audio/test` `{kind, device, backend, url, room_id}` | record three seconds and report the peak level. Administrator only |
 | `GET/POST/DELETE /api/users` | accounts. Administrator only |
 
 Home Assistant REST sensor. Copy the token from Settings:
@@ -299,10 +351,19 @@ sensor:
 
 Put `scrobster_token: Bearer your-token-here` in `secrets.yaml`.
 
+For a sensor per room, such as "what is playing in the kitchen", use this
+`value_template` instead:
+
+```yaml
+    value_template: >-
+      {% set room = value_json.rooms | selectattr('name', 'eq', 'Kitchen') | first %}
+      {{ room.last_match.title if room and room.last_match else 'none' }}
+```
+
 ## Troubleshooting
 
-**Every cycle returns no match.** Read `input <n> dBFS` on the web page, which
-is the room microphone. The browser microphone has its own live meter.
+**Every cycle returns no match.** Read the room's level on the Listening page.
+The browser microphone has its own live meter.
 
 - Near -91 dB: the device is silent. Pick a different `AUDIO_DEVICE`.
 - Near -20 dB but still no match: the microphone hears the music, but the sound

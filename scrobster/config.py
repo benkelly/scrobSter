@@ -63,24 +63,15 @@ _drop_stale_cert_file()
 
 _darwin = sys.platform == "darwin"
 
-# The environment gives the starting values. An administrator can pick another
-# device in Settings, and that choice is kept in the database and applied at
-# startup with set_audio(), so it survives a restart.
-ENV_AUDIO_BACKEND = os.environ.get("AUDIO_BACKEND", "avfoundation" if _darwin else "alsa")
-ENV_AUDIO_DEVICE = os.environ.get("AUDIO_DEVICE", ":0" if _darwin else "default")
-AUDIO_BACKEND = ENV_AUDIO_BACKEND
-AUDIO_DEVICE = ENV_AUDIO_DEVICE
-
-
-def set_audio(backend=None, device=None):
-    """Change the capture device for the running process. None keeps a value."""
-    global AUDIO_BACKEND, AUDIO_DEVICE
-    if backend:
-        AUDIO_BACKEND = backend
-    if device:
-        AUDIO_DEVICE = device
+# The device a room records from when its own device is left empty. The first
+# room of an install leaves it empty, so these keep working as before.
+AUDIO_BACKEND = os.environ.get("AUDIO_BACKEND", "avfoundation" if _darwin else "alsa")
+AUDIO_DEVICE = os.environ.get("AUDIO_DEVICE", ":0" if _darwin else "default")
 CHUNK_SECONDS = int(os.environ.get("CHUNK_SECONDS", "12"))
 MATCH_INTERVAL = int(os.environ.get("MATCH_INTERVAL", "15"))  # min seconds per cycle
+# Every room and browser clip asks Shazam from one address, so requests wait
+# their turn: at most one per this many seconds, whatever the number of rooms.
+RECOGNITION_GAP_SECONDS = float(os.environ.get("RECOGNITION_GAP_SECONDS", "4"))
 RESCROBBLE_MINUTES = int(os.environ.get("RESCROBBLE_MINUTES", "30"))
 # Clear the playing-now mark after this long with no match. Keep it well above one
 # song, because matches drop out during quiet passages and the mark would flicker.

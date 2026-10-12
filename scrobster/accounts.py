@@ -11,7 +11,7 @@ import logging
 import secrets
 import time
 
-from . import config, db
+from . import config, db, rooms
 
 log = logging.getLogger("scrobster")
 
@@ -46,6 +46,7 @@ def _row_to_user(r):
 
 
 def create_user(username, password, is_admin=False, room_mic=False) -> dict:
+    """`room_mic` makes the new account receive every room there is."""
     username = username.strip()
     if not username:
         raise ValueError("the user name cannot be empty")
@@ -55,10 +56,12 @@ def create_user(username, password, is_admin=False, room_mic=False) -> dict:
         cur = c.execute(
             "INSERT INTO users(username, password_hash, is_admin, room_mic, api_token,"
             " created_at) VALUES(?,?,?,?,?,?)",
-            (username, hash_password(password), int(is_admin), int(room_mic),
+            (username, hash_password(password), int(is_admin), 0,
              secrets.token_urlsafe(24), int(time.time())),
         )
         user_id = cur.lastrowid
+    if room_mic:
+        rooms.join_all(user_id)
     # Read after the block, because the insert commits when the block ends and a
     # second connection cannot see it before that.
     return get_user(user_id)
@@ -102,22 +105,11 @@ def count_users() -> int:
         return c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
 
 
-def room_mic_users():
-    """Users who chose to receive what the server microphone hears."""
-    with db._conn() as c:
-        return [dict(r) for r in
-                c.execute("SELECT * FROM users WHERE room_mic=1").fetchall()]
-
-
-def update_user(user_id, *, room_mic=None, is_admin=None, password=None,
-                keep_session=None):
+def update_user(user_id, *, is_admin=None, password=None, keep_session=None):
     """A new password ends every session of that user except `keep_session`,
     so changing it, or recovering it with ADMIN_PASSWORD, locks out whoever
     else was signed in."""
     sets, values = [], []
-    if room_mic is not None:
-        sets.append("room_mic=?")
-        values.append(int(room_mic))
     if is_admin is not None:
         sets.append("is_admin=?")
         values.append(int(is_admin))

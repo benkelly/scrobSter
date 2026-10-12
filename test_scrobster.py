@@ -184,6 +184,7 @@ def main():
     check_privacy()
     check_keep_listening()
     check_enrich()
+    check_rooms()
     print("ok")
 
 
@@ -383,8 +384,11 @@ def check_privacy():
             asyncio.run(room._on_match(info, "browser", [bob]))
             assert room.last_match_for(bob["id"])["title"] == "Private", "bob sees his clip"
             assert room.last_match_for(alice["id"]) is None, "alice does not"
-            asyncio.run(room._on_match({**info, "title": "Radio"}, "server", []))
+            asyncio.run(room.sync_rooms())
+            kitchen = room.first_room()
+            asyncio.run(room._on_match({**info, "title": "Radio"}, "server", [], kitchen))
             assert room.last_match_for(alice["id"])["title"] == "Radio", "the room is shared"
+            assert room.last_match_for(alice["id"])["room"] == "Room microphone"
 
             # No marks, nothing to clear, and nothing logged every cycle.
             calls = []
@@ -617,6 +621,225 @@ def check_enrich():
     info = sent[0]["payload"][0]["track_metadata"]["additional_info"]
     assert info["recording_mbid"] == "r1" and info["isrc"] == "X"
     assert info["submission_client"] == "scrobSter"
+
+
+def check_rooms():
+    """Cameras and other rooms: the upgrade keeps the one microphone, a camera
+    password never leaves the server, each person receives only the rooms they
+    chose, and every room shares one Shazam budget."""
+    import asyncio
+    import sqlite3
+    import time
+    from scrobster import accounts, app, config, db, listener as listener_mod, rooms
+
+    # Camera URLs. The password is shown masked, kept through an edit that
+    # leaves the mask in place, and removed from error text.
+    url = "rtsps://viewer:s3cr%40t@cam.local:7441/kitchen?enableSrtp"
+    assert rooms.mask_url(url) == "rtsps://viewer:***@cam.local:7441/kitchen?enableSrtp"
+    assert rooms.mask_url("rtsp://cam.local/live") == "rtsp://cam.local/live", "no password"
+    assert rooms.merge_url(rooms.mask_url(url), url) == url, "the mask keeps the password"
+    assert rooms.merge_url("rtsp://viewer:new@cam/x", url) == "rtsp://viewer:new@cam/x"
+    try:
+        rooms.merge_url("rtsp://viewer:***@cam/x", None)
+        raise AssertionError("a mask with nothing saved behind it is refused")
+    except ValueError:
+        pass
+    said = rooms.redact(f"{url}: Connection refused, s3cr@t and s3cr%40t", url)
+    assert "s3cr" not in said and "cam.local" in said, said
+    for bad in ("file:///etc/passwd", "/dev/snd", "rtsp://", "rtsp://cam/a b"):
+        try:
+            rooms.check_url(bad)
+            raise AssertionError(f"{bad} must be refused")
+        except ValueError:
+            pass
+
+    # ffmpeg reads a camera's audio only, over TCP.
+    args = listener_mod.input_args(url=url)
+    assert args[args.index("-allowed_media_types") + 1] == "audio", args
+    assert args[args.index("-rtsp_transport") + 1] == "tcp", args
+    assert args[args.index("-i") + 1] == url and "-vn" in args, args
+    assert "-rtsp_transport" not in listener_mod.input_args(url="http://go2rtc/api/stream.aac")
+    assert listener_mod.input_args("pulse", "default") == ["-f", "pulse", "-i", "default"]
+
+    # One readable line from ffmpeg's log, not the generic lines after it.
+    assert listener_mod.short_error(
+        "ALSA lib pcm.c:2721:(snd_pcm_open_noupdate) Unknown PCM default\n"
+        "[alsa @ 0x55] cannot open audio device default (No such file or directory)\n"
+        "[in#0 @ 0x55] Error opening input: Input/output error\n"
+        "Error opening input file default.\n") == \
+        "cannot open audio device default (No such file or directory)"
+
+    # An ffmpeg that quotes the URL in its error must not hand out the password.
+    with tempfile.TemporaryDirectory() as d:
+        fake = os.path.join(d, "ffmpeg")
+        with open(fake, "w") as fh:
+            fh.write('#!/bin/sh\necho "$*: 401 Unauthorized" >&2\nexit 1\n')
+        os.chmod(fake, 0o755)
+        path = os.environ["PATH"]
+        os.environ["PATH"] = d + os.pathsep + path
+        try:
+            asyncio.run(listener_mod.capture_chunk(seconds=1, url="rtsp://u:hunter22@cam/s"))
+            raise AssertionError("a failed capture raises")
+        except RuntimeError as e:
+            assert "hunter22" not in str(e) and "Unauthorized" in str(e), e
+        finally:
+            os.environ["PATH"] = path
+
+    with tempfile.TemporaryDirectory() as d:
+        previous = config.DB_PATH
+        config.DB_PATH = os.path.join(d, "rooms.db")
+        try:
+            # A schema 2 database: one microphone, a device chosen in Settings,
+            # and one of two users receiving it.
+            with sqlite3.connect(config.DB_PATH) as c:
+                c.executescript("""
+                    CREATE TABLE users(id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                        password_hash TEXT NOT NULL, is_admin INTEGER NOT NULL DEFAULT 0,
+                        room_mic INTEGER NOT NULL DEFAULT 0, api_token TEXT UNIQUE,
+                        created_at INTEGER NOT NULL);
+                    CREATE TABLE matches(id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        ts INTEGER NOT NULL, artist TEXT, title TEXT, album TEXT,
+                        track_key TEXT, art_url TEXT,
+                        source TEXT NOT NULL DEFAULT 'server');
+                    CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                    INSERT INTO users VALUES(1, 'alice', 'x', 1, 1, 'ta', 0);
+                    INSERT INTO users VALUES(2, 'bob', 'x', 0, 0, 'tb', 0);
+                    INSERT INTO matches(ts, title) VALUES(5, 'Old');
+                    INSERT INTO settings VALUES('audio_device', 'hw:1,0');
+                    PRAGMA user_version = 2;""")
+            db.init()
+            db.init()  # a second start changes nothing
+            first, = rooms.list_rooms()
+            assert (first["name"], first["kind"], first["device"]) == \
+                ("Room microphone", "device", "hw:1,0"), first
+            assert rooms.rooms_of(1) == [first["id"]] and rooms.rooms_of(2) == [], \
+                "whoever received the microphone receives the room"
+            assert db.get_setting("audio_device") is None, "the choice moved into the room"
+            with sqlite3.connect(config.DB_PATH) as c:
+                assert c.execute("SELECT room FROM matches").fetchone() == (None,)
+
+            alice, bob = accounts.get_user(1), accounts.get_user(2)
+            try:
+                rooms.add_room(name="room MICROPHONE", kind="device")
+                raise AssertionError("names are unique, whatever the case")
+            except ValueError:
+                pass
+            try:
+                rooms.add_room(name="Hall", kind="stream", url="")
+                raise AssertionError("a camera needs a URL")
+            except ValueError:
+                pass
+
+            async def as_admin(fn, *a):
+                return await fn(*a, admin=alice)
+            hall = asyncio.run(as_admin(app.add_room, {"name": "Hall", "kind": "stream",
+                                                       "url": url}))
+            assert hall["url"] == rooms.mask_url(url), "the page never gets the password"
+            assert rooms.get_room(hall["id"])["url"] == url, "the server keeps it"
+            assert hall["member"], "whoever adds a room receives it"
+            asyncio.run(as_admin(app.edit_room, hall["id"],
+                                 {"url": rooms.mask_url(url).replace("kitchen", "hall")}))
+            assert rooms.get_room(hall["id"])["url"] == url.replace("kitchen", "hall"), \
+                "a path edit keeps the saved password"
+            seen_by_bob = {r["name"]: r for r in app._rooms_for(bob)}
+            assert "url" not in seen_by_bob["Hall"] and not seen_by_bob["Hall"]["member"], \
+                "a user sees the room, not where it records from"
+            asyncio.run(app.room_member(hall["id"], {"on": True}, user=bob))
+            assert rooms.rooms_of(bob["id"]) == [hall["id"]]
+
+            # Each room scrobbles for its own members. A song two rooms hear at
+            # once is one play for somebody who receives both.
+            for user in (alice, bob):
+                accounts.set_credential(user["id"], "listenbrainz", {"token": "t"})
+            sent, real = [], (listener_mod.scrobble.scrobble_all,
+                              listener_mod.scrobble.now_playing_all,
+                              listener_mod.enrich.musicbrainz_ids)
+
+            async def scrobble_all(credentials, artist, title, *rest):
+                sent.append((credentials["listenbrainz"]["who"], title))
+                return {"listenbrainz": "ok"}
+
+            async def nothing(*a, **kw):
+                return {}
+            listener_mod.scrobble.scrobble_all = scrobble_all
+            listener_mod.scrobble.now_playing_all = nothing
+            listener_mod.enrich.musicbrainz_ids = nothing
+            accounts.set_credential(alice["id"], "listenbrainz", {"token": "t", "who": "alice"})
+            accounts.set_credential(bob["id"], "listenbrainz", {"token": "t", "who": "bob"})
+            gap, config.RECOGNITION_GAP_SECONDS = config.RECOGNITION_GAP_SECONDS, 0
+            try:
+                house = listener_mod.Listener()
+                asyncio.run(house.sync_rooms())
+                assert not house.listening, "nothing runs until listening starts"
+                track = {"track": {"key": "k1", "title": "Song", "subtitle": "A"},
+                         "matches": [{"offset": 30}]}
+
+                async def found(wav):
+                    return track
+                house._shazam.recognize = found
+                mic, cam = house.rooms[first["id"]], house.rooms[hall["id"]]
+                asyncio.run(house.match_bytes(b"", room=mic))
+                assert sent == [("alice", "Song")], f"only the microphone's members: {sent}"
+                asyncio.run(house.match_bytes(b"", room=cam))
+                assert sent == [("alice", "Song"), ("bob", "Song")], \
+                    f"the same play in the hall is new only for bob: {sent}"
+                assert cam.last_match["room"] == "Hall" and mic.last_match["room"] != "Hall"
+                with sqlite3.connect(config.DB_PATH) as c:
+                    assert {r[0] for r in c.execute(
+                        "SELECT room FROM matches WHERE title='Song'")} == \
+                        {"Room microphone", "Hall"}, "the history says where"
+                assert db.recent(bob["id"])[0]["room"] == "Hall"
+
+                # Turning a room off or removing it stops only that room.
+                asyncio.run(as_admin(app.edit_room, hall["id"], {"enabled": False}))
+                assert rooms.get_room(hall["id"])["enabled"] == 0
+                asyncio.run(as_admin(app.remove_room, hall["id"]))
+                assert rooms.rooms_of(bob["id"]) == [], "membership goes with the room"
+                assert db.recent(bob["id"])[0]["room"] == "Hall", "the history stays"
+            finally:
+                config.RECOGNITION_GAP_SECONDS = gap
+                (listener_mod.scrobble.scrobble_all, listener_mod.scrobble.now_playing_all,
+                 listener_mod.enrich.musicbrainz_ids) = real
+        finally:
+            config.DB_PATH = previous
+
+    # One Shazam queue: requests keep their distance, and a 429 in one room
+    # stops the others asking too.
+    gap = config.RECOGNITION_GAP_SECONDS
+    config.RECOGNITION_GAP_SECONDS = 0.3
+    try:
+        house = listener_mod.Listener()
+        asked = []
+
+        async def answer(wav):
+            asked.append(time.monotonic())
+            if wav == b"429":
+                raise listener_mod.RateLimited("slow down")
+            return {}
+        house._shazam.recognize = answer
+
+        async def three_rooms_at_once():
+            await asyncio.gather(*(house.recognize(b"") for _ in range(3)))
+        asyncio.run(three_rooms_at_once())
+        spacing = [b - a for a, b in zip(asked, asked[1:])]
+        assert len(asked) == 3 and min(spacing) >= 0.29, spacing
+
+        asked.clear()
+        try:
+            asyncio.run(house.recognize(b"429"))
+            raise AssertionError("a 429 raises")
+        except listener_mod.RateLimited as e:
+            assert "60s" in str(e), e
+        assert 55 < house.rate_limited_for() <= 60
+        try:
+            asyncio.run(house.recognize(b""))
+            raise AssertionError("every room waits out the 429")
+        except listener_mod.RateLimited:
+            pass
+        assert len(asked) == 1, "the room that waits does not ask"
+    finally:
+        config.RECOGNITION_GAP_SECONDS = gap
 
 
 if __name__ == "__main__":
