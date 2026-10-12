@@ -4,6 +4,8 @@
 
 Self-hosted background-audio scrobbler. It listens to audio inputs (a mic, a line-in, or the audio of your security cameras), identifies songs with Shazam, and scrobbles them to Last.fm, Libre.fm, ListenBrainz, and Maloja. Point it at a radio, a TV, or every room in the house.
 
+<img width="1012" height="991" alt="image" src="https://github.com/user-attachments/assets/14454c0a-fd00-415c-8560-9b9a88de72b6" />
+
 ## How it works
 
 Every 15 seconds, ffmpeg records a 12-second chunk in each room. A room is one
