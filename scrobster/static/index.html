@@ -111,6 +111,28 @@
         <p id="audio_note" class="note" aria-live="polite"></p>
       </form>
     </div>
+
+    <div id="rates-section" class="hidden">
+      <h2>Recognition</h2>
+      <form class="card stack" id="ratesform" autocomplete="off">
+        <p class="muted small" style="margin:0">Every room asks Shazam from this
+          server&rsquo;s address, so the requests share one limit. Slower is
+          safer; faster notices a new song sooner. Changes apply at once.</p>
+        <div class="row" style="align-items:flex-end">
+          <label class="grow">Seconds between Shazam requests, all rooms
+            <input id="rate_gap" type="number" inputmode="decimal" step="0.5" required></label>
+          <label class="grow">Seconds between listens in each room
+            <input id="rate_interval" type="number" inputmode="numeric" step="1" required></label>
+        </div>
+        <p id="rates_fit" class="note" aria-live="polite"></p>
+        <p id="rates_stats" class="note" aria-live="polite"></p>
+        <div class="row">
+          <button type="submit" id="rates_save">Save</button>
+          <button type="button" id="rates_reset" class="ghost hidden">Back to the configured rates</button>
+        </div>
+        <p id="rates_source" class="note"></p>
+      </form>
+    </div>
   </section>
 
   <!-- Settings -------------------------------------------------------------->
@@ -245,7 +267,7 @@ function showView(name) {
   $$('nav button').forEach(x => x.setAttribute("aria-selected", String(x.dataset.view === name)));
   VIEWS.forEach(v => $(`#view-${v}`).classList.toggle("hidden", v !== name));
   if (name === "settings") loadServices();
-  if (name === "rooms") { refresh(); if (me?.is_admin) loadAudio(); }
+  if (name === "rooms") { refresh(); if (me?.is_admin) { loadAudio(); loadRates(); } }
   if (name === "users") loadUsers();
 }
 $$('nav button').forEach(b => b.onclick = () => {
@@ -494,6 +516,8 @@ async function doRefresh() {
   paintStatus(st);
   stopSeconds = st.stop_seconds || 180;
   paintRooms(st.rooms || []);
+  // The request count moves with every match, so keep it current while it shows.
+  if (me?.is_admin && !$("#view-rooms").classList.contains("hidden")) loadRates(false);
   paintNow(st);
   paintHistory(await api("api/recent?limit=50"));
 }
@@ -773,6 +797,71 @@ async function loadServices() {
   const start = $('[data-lastfm="start"]');
   if (start) start.onclick = lastfmConnect;
 }
+
+// --- how often to ask Shazam, for an administrator ---
+let rates = null;
+
+// Whether the rooms that are on can each listen at their interval: N rooms at
+// one request per I seconds need a request every I / N seconds.
+function paintRateFit() {
+  if (!rates) return;
+  const gap = parseFloat($("#rate_gap").value), interval = parseFloat($("#rate_interval").value);
+  const n = rates.rooms_on, el = $("#rates_fit");
+  if (!(gap > 0 && interval > 0) || !n) { el.textContent = ""; return; }
+  const need = interval / n, rooms = `${n} room${n === 1 ? "" : "s"}`;
+  if (gap > need + 1e-9) {
+    el.className = "note warn";
+    el.textContent = `${rooms} hearing music at once would want a request every ${+need.toFixed(1)} s, `
+      + `but the limit is ${gap} s. They take turns, so each room listens about every ${+(gap * n).toFixed(0)} s.`;
+  } else {
+    el.className = "note ok";
+    el.textContent = `Enough for ${rooms}: up to ${Math.floor(interval / gap + 1e-9)} rooms can hear music at once`
+      + ` and still listen every ${interval} s.`;
+  }
+}
+$("#rate_gap").oninput = $("#rate_interval").oninput = paintRateFit;
+
+function paintRates(r, fields = true) {
+  rates = r;
+  const [gmin, gmax] = r.ranges.gap, [imin, imax] = r.ranges.interval;
+  Object.assign($("#rate_gap"), {min: gmin, max: gmax});
+  Object.assign($("#rate_interval"), {min: imin, max: imax});
+  if (fields) { $("#rate_gap").value = r.gap; $("#rate_interval").value = r.interval; }
+  const mins = r.window_seconds / 60;
+  const parts = [`${r.requests} Shazam request${r.requests === 1 ? "" : "s"} in the last ${mins} minutes`
+    + ` (${+(r.requests / mins).toFixed(1)} a minute).`];
+  if (r.rate_limited_for) parts.push(`Shazam is limiting requests now: every room waits ${r.rate_limited_for} s.`);
+  else if (r.last_rate_limited) parts.push(`Shazam last limited requests ${ago(r.last_rate_limited)}.`);
+  else parts.push("Shazam has not limited requests since the last restart.");
+  $("#rates_stats").className = "note" + (r.rate_limited_for ? " err" : "");
+  $("#rates_stats").textContent = parts.join(" ");
+  $("#rates_reset").classList.toggle("hidden", !r.saved);
+  $("#rates_source").innerHTML = r.saved
+    ? `Chosen here. The configured rates are ${esc(r.env_gap)} s and ${esc(r.env_interval)} s.`
+    : `The configured rates, from the add-on options or the environment.`;
+  paintRateFit();
+}
+
+// `fields` false refreshes the numbers without touching what is being typed.
+async function loadRates(fields = true) {
+  $("#rates-section").classList.remove("hidden");
+  try { paintRates(await api("api/recognition"), fields); } catch {}
+}
+
+$("#ratesform").onsubmit = e => {
+  e.preventDefault();
+  busy($("#rates_save"), async () => {
+    try {
+      paintRates(await send("api/recognition", "PUT",
+        {gap: parseFloat($("#rate_gap").value), interval: parseInt($("#rate_interval").value, 10)}));
+      toast("Recognition rates saved", "ok");
+    } catch (err) { $("#rates_fit").className = "note err"; $("#rates_fit").textContent = err.message; }
+  });
+};
+$("#rates_reset").onclick = () => busy($("#rates_reset"), async () => {
+  try { paintRates(await api("api/recognition", {method: "DELETE"})); toast("Back to the configured rates", "ok"); }
+  catch (err) { toast(err.message, "err"); }
+});
 
 // --- rooms ---
 // The form adds a room, or edits the one in `editing`.

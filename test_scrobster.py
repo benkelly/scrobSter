@@ -185,6 +185,7 @@ def main():
     check_keep_listening()
     check_enrich()
     check_rooms()
+    check_rates()
     print("ok")
 
 
@@ -840,6 +841,94 @@ def check_rooms():
         assert len(asked) == 1, "the room that waits does not ask"
     finally:
         config.RECOGNITION_GAP_SECONDS = gap
+
+
+def check_rates():
+    """An administrator tunes how often Shazam is asked, within safe limits, and
+    a change applies without a restart."""
+    import asyncio
+    import time
+    from fastapi import HTTPException
+    from scrobster import accounts, app, config, db, listener as listener_mod
+
+    with tempfile.TemporaryDirectory() as d:
+        previous = config.DB_PATH, config.RECOGNITION_GAP_SECONDS, config.MATCH_INTERVAL
+        config.DB_PATH = os.path.join(d, "rates.db")
+        try:
+            db.init()
+            admin = accounts.create_user("admin", "password123", is_admin=True)
+
+            def put(body):
+                return asyncio.run(app.set_recognition(body, admin=admin))
+            for bad in ({"gap": 0.5}, {"gap": 61}, {"interval": 11}, {"gap": "fast"}):
+                try:
+                    put(bad)
+                    raise AssertionError(f"{bad} must be refused")
+                except HTTPException as e:
+                    assert e.status_code == 400, e
+            assert config.RECOGNITION_GAP_SECONDS == previous[1], "a refusal changes nothing"
+
+            state = put({"gap": 2.5, "interval": 20})
+            assert (config.RECOGNITION_GAP_SECONDS, config.MATCH_INTERVAL) == (2.5, 20)
+            assert state["saved"] and state["gap"] == 2.5 and state["interval"] == 20
+            assert db.get_setting("recognition_gap_seconds") == "2.5"
+            state = put({"interval": 30})
+            assert config.RECOGNITION_GAP_SECONDS == 2.5, "a field left out keeps its value"
+
+            # What a restart reads back.
+            config.set_rates(config.ENV_RECOGNITION_GAP_SECONDS, config.ENV_MATCH_INTERVAL)
+            config.set_rates(db.get_setting("recognition_gap_seconds"),
+                             db.get_setting("match_interval"))
+            assert (config.RECOGNITION_GAP_SECONDS, config.MATCH_INTERVAL) == (2.5, 30)
+
+            state = asyncio.run(app.reset_recognition(admin=admin))
+            assert not state["saved"]
+            assert (config.RECOGNITION_GAP_SECONDS, config.MATCH_INTERVAL) == \
+                (config.ENV_RECOGNITION_GAP_SECONDS, config.ENV_MATCH_INTERVAL)
+        finally:
+            config.DB_PATH = previous[0]
+            config.set_rates(previous[1], previous[2])
+
+    # A room waiting out a long interval wakes when the interval shrinks.
+    house = listener_mod.Listener()
+
+    async def shorten_mid_wait():
+        config.set_rates(interval=600)
+        start = time.monotonic()
+        wait = asyncio.create_task(house._until_next_cycle(start - 10))
+        await asyncio.sleep(0.1)
+        assert not wait.done(), "still inside the long interval"
+        config.set_rates(interval=12)
+        house.rates_changed()
+        await asyncio.wait_for(wait, 5)
+        return time.monotonic() - start
+    try:
+        took = asyncio.run(shorten_mid_wait())
+        assert took < 3, f"the new interval had already passed, so the wait ends ({took:.1f}s)"
+    finally:
+        config.set_rates(interval=previous[2])
+
+    # Requests are counted for the last ten minutes, and a 429 is remembered.
+    gap = config.RECOGNITION_GAP_SECONDS
+    config.set_rates(gap=0)
+    try:
+        async def answer(wav):
+            if wav == b"429":
+                raise listener_mod.RateLimited("slow down")
+            return {}
+        house._shazam.recognize = answer
+        house._requests.append(time.monotonic() - listener_mod.REQUEST_WINDOW_SECONDS - 1)
+        for _ in range(3):
+            asyncio.run(house.recognize(b""))
+        assert house.requests_recently() == 3, "an old request falls out of the count"
+        assert house.last_rate_limited is None
+        try:
+            asyncio.run(house.recognize(b"429"))
+        except listener_mod.RateLimited:
+            pass
+        assert abs(house.last_rate_limited - time.time()) < 5
+    finally:
+        config.set_rates(gap=gap)
 
 
 if __name__ == "__main__":
