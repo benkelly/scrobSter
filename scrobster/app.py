@@ -18,8 +18,8 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from . import accounts, config, db, rooms, scrobble
 from . import __version__
-from .listener import (SILENT_DBFS, Listener, RateLimited, decode_to_wav, list_devices,
-                       peak_dbfs, probe_level)
+from .listener import (REQUEST_WINDOW_SECONDS, SILENT_DBFS, Listener, RateLimited,
+                       decode_to_wav, list_devices, peak_dbfs, probe_level)
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 COOKIE = "scrobster_session"
@@ -37,6 +37,9 @@ async def _lifespan(app):
     removed = db.delete_orphaned_matches()
     if removed:
         log.info("Removed %d matches that no account scrobbled.", removed)
+    # Rates chosen on the Rooms tab outrank the environment, see /api/recognition.
+    config.set_rates(db.get_setting("recognition_gap_seconds"),
+                     db.get_setting("match_interval"))
     await listener.sync_rooms()
     if config.LISTEN_ON_START:
         listener.start()
@@ -384,6 +387,69 @@ async def room_member(room_id: int, body: dict, user: dict = Depends(require_use
         raise HTTPException(404, "no such room")
     rooms.set_member(room_id, user["id"], bool(body.get("on")))
     return {"rooms": rooms.rooms_of(user["id"])}
+
+
+# --- how often to ask Shazam, for an administrator ----------------------------------
+
+_RATES = {"gap": ("recognition_gap_seconds", config.RECOGNITION_GAP_RANGE, float),
+          "interval": ("match_interval", config.MATCH_INTERVAL_RANGE, int)}
+
+
+def _rates_state() -> dict:
+    return {
+        "gap": config.RECOGNITION_GAP_SECONDS, "interval": config.MATCH_INTERVAL,
+        "env_gap": config.ENV_RECOGNITION_GAP_SECONDS,
+        "env_interval": config.ENV_MATCH_INTERVAL,
+        "saved": any(db.get_setting(key) is not None for key, _, _ in _RATES.values()),
+        "ranges": {"gap": config.RECOGNITION_GAP_RANGE,
+                   "interval": config.MATCH_INTERVAL_RANGE},
+        # Rooms that would ask while music plays, which is what the rate must carry.
+        "rooms_on": sum(1 for room in listener.rooms.values() if room.enabled),
+        "requests": listener.requests_recently(),
+        "window_seconds": REQUEST_WINDOW_SECONDS,
+        "last_rate_limited": listener.last_rate_limited,
+        "rate_limited_for": round(listener.rate_limited_for()),
+    }
+
+
+@app.get("/api/recognition")
+async def recognition(admin: dict = Depends(require_admin)):
+    """How often Shazam is asked, and how often it was asked lately."""
+    return _rates_state()
+
+
+@app.put("/api/recognition")
+async def set_recognition(body: dict, admin: dict = Depends(require_admin)):
+    """Change how often Shazam is asked. Kept in the database, it outranks the
+    environment and the add-on options, and applies without a restart."""
+    chosen = {}
+    for name, (key, (low, high), kind) in _RATES.items():
+        if body.get(name) is None:
+            continue
+        try:
+            value = kind(body[name])
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"{name} must be a number")
+        if not low <= value <= high:
+            raise HTTPException(400, f"{name} must be between {low} and {high} seconds")
+        chosen[name] = value
+    for name, value in chosen.items():
+        db.set_setting(_RATES[name][0], value)
+    config.set_rates(chosen.get("gap"), chosen.get("interval"))
+    listener.rates_changed()
+    log.info("recognition rates changed by %s: %s s between requests, %s s per room",
+             admin["username"], config.RECOGNITION_GAP_SECONDS, config.MATCH_INTERVAL)
+    return _rates_state()
+
+
+@app.delete("/api/recognition")
+async def reset_recognition(admin: dict = Depends(require_admin)):
+    """Forget the rates chosen here and go back to the environment."""
+    for key, _, _ in _RATES.values():
+        db.set_setting(key, None)
+    config.set_rates(config.ENV_RECOGNITION_GAP_SECONDS, config.ENV_MATCH_INTERVAL)
+    listener.rates_changed()
+    return _rates_state()
 
 
 # --- audio inputs, for an administrator -------------------------------------------

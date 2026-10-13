@@ -97,6 +97,13 @@ requests take turns: at most one per `RECOGNITION_GAP_SECONDS`, whatever the
 number of rooms. A silent room asks nothing. A 429 pauses every room, from one
 minute up to ten.
 
+An administrator tunes both rates under **Recognition** on the Rooms tab, and a
+change applies at once. The card counts the requests of the last ten minutes,
+says when Shazam last limited them, and warns when the rooms that are on would
+want requests faster than the limit allows. A rate chosen there outranks
+`RECOGNITION_GAP_SECONDS` and `MATCH_INTERVAL`, until **Back to the configured
+rates**.
+
 An upgrade from 0.2 keeps working as before. The microphone becomes the first
 room, named "Server mic", with the device chosen in Settings. Everyone who
 received the microphone receives that room. Rename it after the room it is in
@@ -170,8 +177,8 @@ A service is enabled when all of its variables are set.
 | `AUDIO_BACKEND` | `avfoundation` (macOS) / `alsa` (Linux) | ffmpeg input format |
 | `AUDIO_DEVICE` | `:0` (macOS) / `default` (Linux) | ffmpeg input device for a microphone room that names no device of its own, the first room included |
 | `CHUNK_SECONDS` | `12` | recorded seconds per match attempt; values above 14 are capped |
-| `MATCH_INTERVAL` | `15` | minimum seconds per cycle in each room; increase if rate-limited |
-| `RECOGNITION_GAP_SECONDS` | `4` | minimum seconds between two Shazam requests, across every room and browser clip |
+| `MATCH_INTERVAL` | `15` | minimum seconds per cycle in each room, 12 to 600; increase if rate-limited. The Rooms tab can change it |
+| `RECOGNITION_GAP_SECONDS` | `4` | minimum seconds between two Shazam requests, across every room and browser clip, 1 to 60. The Rooms tab can change it |
 | `RESCROBBLE_MINUTES` | `30` | fallback cooldown, used only when a match has no offset |
 | `NOW_PLAYING_STOP_SECONDS` | `180` | clear the playing-now mark after this long with no match |
 | `DB_PATH` | `scrobster.db` | SQLite history file |
@@ -334,6 +341,7 @@ through Home Assistant ingress.
 | `GET /api/rooms` | the rooms. An administrator also sees each input, with a camera password masked |
 | `POST /api/rooms`, `PUT/DELETE /api/rooms/{id}` `{name, kind, device, backend, url, enabled}` | add, change or remove a room. `kind` is `device` or `stream`. Administrator only |
 | `PUT /api/rooms/{id}/member` `{"on": true}` | receive what that room hears, or stop |
+| `GET/PUT/DELETE /api/recognition` `{gap, interval}` | how often Shazam is asked, with the request count of the last ten minutes. `DELETE` goes back to the environment. Administrator only |
 | `GET /api/audio` | the devices ffmpeg can see, and the environment's default. Administrator only |
 | `POST /api/audio/test` `{kind, device, backend, url, room_id}` | record three seconds and report the peak level. Administrator only |
 | `GET/POST/DELETE /api/users` | accounts. Administrator only |

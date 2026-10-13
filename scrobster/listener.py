@@ -9,6 +9,7 @@ CLI:
 """
 import array
 import asyncio
+import collections
 import io
 import logging
 import math
@@ -34,6 +35,8 @@ MAX_SEGMENT_SECONDS = 14
 SILENT_DBFS = -70.0
 # Give up on one Shazam request after this long.
 SHAZAM_TIMEOUT_SECONDS = 30
+# How far back the request count on the Rooms tab looks.
+REQUEST_WINDOW_SECONDS = 600
 # ffmpeg gets this long beyond the audio it records before it counts as stuck.
 FFMPEG_GRACE_SECONDS = 20
 
@@ -460,6 +463,10 @@ class Listener:
         self._last_request = 0.0  # monotonic
         self._blocked_until = 0.0  # monotonic, set by a 429
         self._backoff = 0  # seconds, grows while Shazam answers 429
+        self._requests = collections.deque()  # monotonic time of each request
+        self.last_rate_limited = None  # unix time of the last 429
+        # Set and cleared at once, to wake every room's wait after a rate change.
+        self._rates_changed = asyncio.Event()
         # (user_id, track_key) -> (ts, offset); in memory, a restart forgets
         self._last_plays = {}
         self._now_playing = {}  # user_id -> (track_key, ts) of the last mark
@@ -521,6 +528,19 @@ class Listener:
         for user_id in marks:
             await scrobble.clear_now_playing_all(accounts.get_credentials(user_id))
 
+    def rates_changed(self):
+        """Wake every room between cycles, so a new interval applies now rather
+        than after the old, possibly long, wait."""
+        self._rates_changed.set()
+        self._rates_changed.clear()
+
+    def requests_recently(self) -> int:
+        """Shazam requests in the last REQUEST_WINDOW_SECONDS, for tuning."""
+        cutoff = time.monotonic() - REQUEST_WINDOW_SECONDS
+        while self._requests and self._requests[0] < cutoff:
+            self._requests.popleft()
+        return len(self._requests)
+
     def rate_limited_for(self) -> float:
         """Seconds until Shazam may be asked again after a 429, or 0."""
         return max(0.0, self._blocked_until - time.monotonic())
@@ -536,9 +556,12 @@ class Listener:
             if gap > 0:
                 await asyncio.sleep(gap)
             self._last_request = time.monotonic()
+            self._requests.append(self._last_request)
+            self.requests_recently()  # keeps the window from growing
             try:
                 result = await self._shazam.recognize(wav)
             except RateLimited as e:
+                self.last_rate_limited = int(time.time())
                 self._backoff = rate_limit_wait(self._backoff)
                 self._blocked_until = time.monotonic() + self._backoff
                 raise RateLimited(f"{e}; trying again in {self._backoff:.0f}s") from None
@@ -581,8 +604,19 @@ class Listener:
             except Exception as e:
                 room.last_error = rooms.redact(str(e), room.url)[:300]
                 log.warning("%s: cycle failed: %s", room.name, room.last_error)
-            elapsed = time.monotonic() - cycle_start
-            await asyncio.sleep(max(0, config.MATCH_INTERVAL - elapsed))
+            await self._until_next_cycle(cycle_start)
+
+    async def _until_next_cycle(self, cycle_start):
+        """Wait out MATCH_INTERVAL from the start of the cycle. A rate change
+        wakes the wait, which then measures again against the new interval."""
+        while True:
+            left = config.MATCH_INTERVAL - (time.monotonic() - cycle_start)
+            if left <= 0:
+                return
+            try:
+                await asyncio.wait_for(self._rates_changed.wait(), left)
+            except asyncio.TimeoutError:
+                return
 
     def last_match_for(self, user_id):
         """The newest match this user may see: any room's, or their own clip.

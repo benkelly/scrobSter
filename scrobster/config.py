@@ -72,6 +72,24 @@ MATCH_INTERVAL = int(os.environ.get("MATCH_INTERVAL", "15"))  # min seconds per 
 # Every room and browser clip asks Shazam from one address, so requests wait
 # their turn: at most one per this many seconds, whatever the number of rooms.
 RECOGNITION_GAP_SECONDS = float(os.environ.get("RECOGNITION_GAP_SECONDS", "4"))
+# The two rates above are where an install starts. An administrator can change
+# them on the Rooms tab, which keeps them in the database, outranks these, and
+# applies them with set_rates() without a restart.
+ENV_MATCH_INTERVAL = MATCH_INTERVAL
+ENV_RECOGNITION_GAP_SECONDS = RECOGNITION_GAP_SECONDS
+# The same limits as the Home Assistant add-on options. Below 12 seconds a room
+# asks Shazam more often than is safe from one address.
+MATCH_INTERVAL_RANGE = (12, 600)
+RECOGNITION_GAP_RANGE = (1, 60)
+
+
+def set_rates(gap=None, interval=None):
+    """Change the rates for the running process. None keeps a value."""
+    global RECOGNITION_GAP_SECONDS, MATCH_INTERVAL
+    if gap is not None:
+        RECOGNITION_GAP_SECONDS = float(gap)
+    if interval is not None:
+        MATCH_INTERVAL = int(interval)
 RESCROBBLE_MINUTES = int(os.environ.get("RESCROBBLE_MINUTES", "30"))
 # Clear the playing-now mark after this long with no match. Keep it well above one
 # song, because matches drop out during quiet passages and the mark would flicker.
