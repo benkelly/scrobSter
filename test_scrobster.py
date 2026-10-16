@@ -1,10 +1,12 @@
 """Self-check for the pure logic. Run: .venv/bin/python test_scrobster.py"""
+import collections
 import io
 import json
 import math
 import os
 import struct
 import tempfile
+import time
 import wave
 
 from scrobster.config import _load_options_json
@@ -138,6 +140,26 @@ def main():
     assert peak_dbfs(_wav(32767)) > -1, "full scale"
     assert -7 < peak_dbfs(_wav(16384)) < -5, "half scale is about -6 dBFS"
     assert peak_dbfs(_wav(0)) < -80 < peak_dbfs(_wav(16384)), "silence threshold separates them"
+
+    # a room's live meter: one peak per block, however ffmpeg splits its output
+    from scrobster import listener as live
+    heard = []
+    blocks = live.LevelBlocks(heard.append)
+    loud = struct.pack("<h", 16384) * (blocks.size // 2)
+    quiet = b"\0" * blocks.size
+    pcm = loud + quiet + loud[:10]
+    for i in range(0, len(pcm), 777):
+        blocks.feed(pcm[i:i + 777])
+    assert len(heard) == 2 and -7 < heard[0] < -5 and heard[1] == -99.0, heard
+    room = live.Room({"id": 1, "name": "r", "kind": "device", "enabled": 1,
+                      "url": None, "backend": "alsa", "device": "default"})
+    assert room.live_level_db() is None, "nothing heard yet"
+    room.heard_level(-30.0)
+    room.heard_level(-50.0)
+    assert room.live_level_db() == -30.0, "the loudest recent block"
+    room._live_levels = collections.deque(
+        [(time.monotonic() - live.LEVEL_STALE_SECONDS - 1, -20.0)])
+    assert room.live_level_db() is None, "between recordings there is no live level"
 
     # "playing now" is announced on change, then refreshed before it expires
     assert should_announce("a", 1000, None), "first match announces"

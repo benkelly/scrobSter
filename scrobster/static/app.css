@@ -183,8 +183,11 @@ nav button:focus-visible { outline-offset: -2px; border-radius: 4px; }
 label.member { display: flex; align-items: center; gap: .5rem; cursor: pointer; }
 .room-now .clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
                   overflow: hidden; }
-.room-now img { width: 28px; height: 28px; border-radius: 4px; flex: none; object-fit: cover;
+.room-now img { width: 44px; height: 44px; border-radius: 6px; flex: none; object-fit: cover;
                 background: var(--field); }
+/* Title on one line, artist and when on the next, so the art lines up with
+   both whatever the width. */
+.room-now .sub { display: block; margin-top: .15rem; }
 
 /* --- tables --------------------------------------------------------------- */
 .table-wrap { overflow-x: auto; }
@@ -274,6 +277,8 @@ kbd { font: inherit; font-size: .75rem; color: var(--muted); }
   td.art { width: 32px; }
   img.thumb, .thumb-empty { width: 28px; height: 28px; }
   .meter .bar { width: 64px; }
+  /* The track gets the whole width, and its meter goes underneath. */
+  .room-live .room-now { flex-basis: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {

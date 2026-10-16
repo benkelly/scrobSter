@@ -39,6 +39,11 @@ SHAZAM_TIMEOUT_SECONDS = 30
 REQUEST_WINDOW_SECONDS = 600
 # ffmpeg gets this long beyond the audio it records before it counts as stuck.
 FFMPEG_GRACE_SECONDS = 20
+# A room's live meter takes the peak of each block this long, while it records.
+LEVEL_BLOCK_SECONDS = 0.25
+# The meter shows the loudest block this recent, and nothing once blocks stop.
+LEVEL_SHOW_SECONDS = 0.5
+LEVEL_STALE_SECONDS = 1.5
 
 
 class RateLimited(RuntimeError):
@@ -159,9 +164,15 @@ def peak_dbfs(wav: bytes) -> float:
     recognised", so the loop reports this instead of failing quietly.
     """
     with wave.open(io.BytesIO(wav)) as w:
-        frames = w.readframes(w.getnframes())
+        return peak_dbfs_pcm(w.readframes(w.getnframes()))
+
+
+def peak_dbfs_pcm(frames: bytes) -> float:
+    """Peak level of raw 16-bit samples, as peak_dbfs()."""
     samples = array.array("h")
     samples.frombytes(frames[: len(frames) - len(frames) % 2])
+    if sys.byteorder == "big":
+        samples.byteswap()
     peak = max(max(samples), -min(samples)) if samples else 0
     return round(20 * math.log10(peak / 32768), 1) if peak > 0 else -99.0
 
@@ -273,8 +284,11 @@ async def list_devices(backend: str) -> list[dict]:
     return found
 
 
-async def _ffmpeg(*argv, data=None, timeout):
+async def _ffmpeg(*argv, data=None, timeout, on_stdout=None):
     """Run ffmpeg and return (returncode, stderr).
+
+    `on_stdout`, when given, is called with each piece of ffmpeg's standard
+    output as it arrives.
 
     An input that opens but never delivers audio would otherwise block for good.
     A cancelled capture would leave ffmpeg holding the device, so it is killed
@@ -283,10 +297,22 @@ async def _ffmpeg(*argv, data=None, timeout):
     proc = await asyncio.create_subprocess_exec(
         "ffmpeg", "-hide_banner", "-loglevel", "error", *argv,
         stdin=asyncio.subprocess.PIPE if data is not None else asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE if on_stdout else asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
     )
+
+    async def run():
+        if on_stdout is None:
+            return (await proc.communicate(data))[1]
+        async def pump():
+            while piece := await proc.stdout.read(65536):
+                on_stdout(piece)
+        err, _ = await asyncio.gather(proc.stderr.read(), pump())
+        await proc.wait()
+        return err
+
     try:
-        _, err = await asyncio.wait_for(proc.communicate(data), timeout)
+        err = await asyncio.wait_for(run(), timeout)
     except asyncio.TimeoutError:
         raise RuntimeError(f"ffmpeg gave nothing in {timeout:.0f}s; the input may have"
                            " stopped sending audio") from None
@@ -310,20 +336,45 @@ def input_args(backend=None, device=None, url=None) -> list[str]:
     return args + ["-i", url, "-vn"]
 
 
-async def capture_chunk(seconds=None, backend=None, device=None, url=None) -> bytes:
+class LevelBlocks:
+    """Cut raw 16 kHz mono samples into blocks and report each block's peak."""
+
+    def __init__(self, on_level):
+        self.on_level = on_level
+        self.size = int(16000 * LEVEL_BLOCK_SECONDS) * 2
+        self.pending = b""
+
+    def feed(self, piece: bytes):
+        self.pending += piece
+        while len(self.pending) >= self.size:
+            block, self.pending = self.pending[:self.size], self.pending[self.size:]
+            self.on_level(peak_dbfs_pcm(block))
+
+
+async def capture_chunk(seconds=None, backend=None, device=None, url=None,
+                        on_level=None) -> bytes:
     """Record one chunk from a device, or from a stream when `url` is set. Left
-    out, the device is the configured one."""
+    out, the device is the configured one.
+
+    `on_level`, when given, hears the peak of every LEVEL_BLOCK_SECONDS while
+    the chunk records, for a live meter.
+    """
     # ponytail: one ffmpeg spawn per chunk; self-heals when the device drops.
     # Write a temp file, never a pipe: piped WAV gets 0xFFFFFFFF RIFF sizes because
     # ffmpeg cannot seek back to patch them, and the decoder then reads no samples.
+    # The meter's copy is raw samples, which have no header to get wrong.
     with tempfile.TemporaryDirectory() as tmp:
         path = pathlib.Path(tmp) / "chunk.wav"
         seconds = seconds or config.CHUNK_SECONDS
+        meter = []
+        if on_level:
+            meter = ["-t", str(seconds), "-ac", "1", "-ar", "16000", "-f", "s16le", "pipe:1"]
         try:
             code, err = await _ffmpeg(
                 *input_args(backend, device, url),
-                "-t", str(seconds), "-ac", "1", "-ar", "16000", "-y", str(path),
-                timeout=seconds + FFMPEG_GRACE_SECONDS)
+                "-t", str(seconds), "-ac", "1", "-ar", "16000", "-y", str(path), *meter,
+                timeout=seconds + FFMPEG_GRACE_SECONDS,
+                on_stdout=LevelBlocks(on_level).feed if on_level else None)
         except RuntimeError as e:
             raise RuntimeError(rooms.redact(str(e), url)) from None
         data = path.read_bytes() if path.exists() else b""
@@ -419,8 +470,24 @@ class Room:
     def reset_input(self):
         """Forget what the previous input reported, after it changed."""
         self.last_level_db = None
+        self._live_levels = collections.deque()  # (monotonic, dBFS) per block
         self.last_error = None
         self._warned_silent = False
+
+    def heard_level(self, db: float):
+        now = time.monotonic()
+        self._live_levels.append((now, db))
+        while self._live_levels[0][0] < now - LEVEL_STALE_SECONDS:
+            self._live_levels.popleft()
+
+    def live_level_db(self) -> float | None:
+        """The loudest block of the last LEVEL_SHOW_SECONDS while recording,
+        or None between recordings."""
+        now = time.monotonic()
+        if not self._live_levels or self._live_levels[-1][0] < now - LEVEL_STALE_SECONDS:
+            return None
+        recent = [db for t, db in self._live_levels if t >= now - LEVEL_SHOW_SECONDS]
+        return max(recent or [self._live_levels[-1][1]])
 
     def capture_args(self) -> dict:
         if self.kind == "stream":
@@ -579,7 +646,7 @@ class Listener:
                     # Recording now would only be thrown away.
                     await asyncio.sleep(wait)
                     continue
-                wav = await capture_chunk(**room.capture_args())
+                wav = await capture_chunk(**room.capture_args(), on_level=room.heard_level)
                 room.attempts += 1
                 room.last_attempt = int(time.time())
                 room.last_level_db = peak_dbfs(wav)

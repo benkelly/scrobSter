@@ -294,10 +294,21 @@ const meterClass = db => db < SILENT_DB ? " silent" : db < QUIET_DB ? " quiet" :
 // --- listening ---
 let lastHistory = "";
 
-// One row per room: what it hears now, and how loud.
-const levelMeter = db => `<span class="meter${meterClass(db)}" title="Peak level of the last capture">
-  <span class="bar"><span class="fill" style="width:${meterPct(db).toFixed(0)}%"></span></span>
-  <span>${esc(db)} dBFS</span></span>`;
+// One row per room: what it hears now, and how loud. The meter is painted
+// apart from the line, because it moves several times a second.
+const levelMeter = `<span class="meter hidden" data-meter title="Peak level as the room records">
+  <span class="bar"><span class="fill"></span></span>
+  <span><span data-db></span> dBFS</span></span>`;
+
+function paintMeter(card, db) {
+  const el = card.querySelector("[data-meter]");
+  if (!el) return;
+  el.classList.toggle("hidden", db == null);
+  if (db == null) return;
+  el.className = "meter" + meterClass(db);
+  el.querySelector(".fill").style.width = meterPct(db).toFixed(1) + "%";
+  el.querySelector("[data-db]").textContent = db.toFixed(0);
+}
 
 function roomState(r) {
   if (!r.enabled) return `<span class="muted">Turned off.</span>`;
@@ -316,11 +327,12 @@ function roomLive(r) {
   const fresh = m && r.running && Date.now() / 1000 - m.ts < stopSeconds;
   const now = m && !(r.running && r.last_error)
     ? `${m.art_url ? `<img src="${esc(m.art_url)}" alt="" loading="lazy">` : ""}
-      <span class="grow"><b>${ext(shazamUrl(m), esc(m.title), "plain")}</b> &middot; ${esc(m.artist)}
-      <span class="muted">&middot; ${fresh ? `<span class="ok">playing now</span>` : when(m.ts)}</span></span>`
+      <span class="grow"><b>${ext(shazamUrl(m), esc(m.title), "plain")}</b>
+      <span class="sub">${esc(m.artist)}
+      <span class="muted">&middot; ${fresh ? `<span class="ok">playing now</span>` : when(m.ts)}</span></span></span>`
     : roomState(r);
   return `<div class="room-now grow">${now}</div>
-    ${r.running && r.level_db != null ? levelMeter(r.level_db) : ""}`;
+    ${r.running ? levelMeter : ""}`;
 }
 
 function roomCard(r) {
@@ -345,6 +357,10 @@ function roomCard(r) {
 
 let roomsShape = "";
 const roomsLive = new Map();
+// The newest live level of each room. Between two recordings a room reports
+// none, and its meter holds the last one rather than dropping.
+const roomLevels = new Map();
+const roomLevel = r => roomLevels.get(r.id) ?? r.level_db;
 function paintRooms(list) {
   roomsKnown = list;
   const el = $("#rooms");
@@ -362,7 +378,31 @@ function paintRooms(list) {
     // not flicker every five seconds.
     const html = roomLive(r);
     if (roomsLive.get(r.id) !== html) { card.querySelector("[data-live]").innerHTML = html; roomsLive.set(r.id, html); }
+    if (!r.running) roomLevels.delete(r.id);
+    else if (r.live_db != null) roomLevels.set(r.id, r.live_db);
+    paintMeter(card, r.running ? roomLevel(r) : null);
   }
+}
+
+// The status poll comes every five seconds, too slow for a meter, so the
+// meters ask for the levels alone while the Rooms tab shows a recording room.
+const LEVELS_MS = 400;
+async function pollLevels() {
+  const showing = !document.hidden && !$("#view-rooms").classList.contains("hidden")
+    && roomsKnown.some(r => r.running);
+  if (showing) {
+    try {
+      const levels = await api("api/levels");
+      for (const r of roomsKnown) {
+        const db = levels[r.id];
+        if (db == null) continue;
+        roomLevels.set(r.id, db);
+        const card = $(`#rooms [data-room="${r.id}"]`);
+        if (card) paintMeter(card, db);
+      }
+    } catch {}
+  }
+  setTimeout(pollLevels, LEVELS_MS);
 }
 
 // One set of handlers for every card, so a rebuilt card needs none of its own.
@@ -1114,6 +1154,7 @@ $("#signout").onclick = () => busy($("#signout"), async () => {
   await refresh();
   // Poll only while the tab is visible, and catch up as soon as it comes back.
   setInterval(() => { if (!document.hidden) refresh(); }, 5000);
+  pollLevels();
   document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
 })();
 </script>

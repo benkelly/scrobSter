@@ -250,8 +250,8 @@ ffmpeg -i /tmp/t.wav -af volumedetect -f null - 2>&1 | grep mean_volume
 Play music, then read the result. A value near -91 dB is digital silence, and
 that device is the wrong one. A value near -20 dB is good.
 
-The Rooms tab shows each room's level while it listens, and warns you
-when a room is silent.
+The Rooms tab shows each room's level while it listens, updated a few times a
+second while the room records, and warns you when a room is silent.
 
 Index 0 is not always the microphone. On a Mac with virtual audio software, index
 0 is often a loopback device that stays silent until you route audio through it.
@@ -333,6 +333,7 @@ through Home Assistant ingress.
 |---|---|
 | `POST /api/login` `{username, password}` | sign in, sets a session cookie |
 | `GET /api/status` | version, listening state, last match, profile links, and `rooms`: each room's state, level and last match. `level_db` and `last_error` describe the first room |
+| `GET /api/levels` | `{room_id: dBFS}`: the live peak of each room that is listening, or `null` between two recordings |
 | `POST /api/listen` `{"on": true}` | start or stop listening in every room that is turned on. Administrator only |
 | `POST /api/match` (raw audio body) | identify one clip and scrobble it for the caller |
 | `GET /api/recent?limit=50` | that user's scrobble history |
