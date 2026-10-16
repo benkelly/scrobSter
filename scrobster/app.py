@@ -253,6 +253,7 @@ def _room_public(row, user, mine) -> dict:
            "last_match": live.last_match if live else None,
            "last_error": live.last_error if live else None,
            "level_db": live.last_level_db if live else None,
+           "live_db": live.live_level_db() if live else None,
            "attempts": live.attempts if live else 0,
            "last_attempt": live.last_attempt if live else None}
     if user["is_admin"]:
@@ -290,6 +291,14 @@ async def status(user: dict = Depends(require_user)):
         "rate_limited_for": round(listener.rate_limited_for()),
         "rooms": room_list,
     }
+
+
+@app.get("/api/levels")
+async def levels(user: dict = Depends(require_user)):
+    """How loud each recording room is right now, for the Rooms tab's meters.
+    Small, because the page asks several times a second."""
+    return {str(room_id): room.live_level_db()
+            for room_id, room in listener.rooms.items() if room.running}
 
 
 @app.post("/api/listen")
