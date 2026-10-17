@@ -320,6 +320,14 @@ address, and the app would otherwise sign that pod's requests in as the owner.
 CI installs the chart into a throwaway [kind](https://kind.sigs.k8s.io/)
 cluster on every pull request and signs in through the service.
 
+The chart is ready for [Artifact Hub](https://artifacthub.io): CI pushes
+[`charts/scrobster/artifacthub-repo.yml`](charts/scrobster/artifacthub-repo.yml)
+to the `artifacthub.io` tag next to the chart. Listing it is a manual step that
+needs an Artifact Hub account: add a Helm charts repository with the URL
+`oci://ghcr.io/benkelly/charts/scrobster`, then copy the repository ID it shows
+into `repositoryID` in that file. Without the ID the listing still works, just
+without the Verified Publisher badge.
+
 ## Two ways to listen
 
 **Server microphone (default).** The Python process records the host audio

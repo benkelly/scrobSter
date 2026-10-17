@@ -1,0 +1,11 @@
+# Artifact Hub repository metadata. CI pushes this file to the chart's OCI
+# repository under the special tag "artifacthub.io". It is not part of the
+# chart package (see .helmignore).
+#
+# repositoryID comes from registering oci://ghcr.io/benkelly/charts/scrobster
+# on artifacthub.io (Control Panel > Repositories). Until it is filled in, the
+# chart is still listed, just without the Verified Publisher badge.
+# repositoryID: <the repository's ID from Artifact Hub>
+owners:
+  - name: benkelly
+    email: git@benjamin.ie

@@ -1,2 +1,4 @@
 .DS_Store
 *.tgz
+# Artifact Hub metadata, pushed by CI on its own tag, not part of the chart.
+artifacthub-repo.yml

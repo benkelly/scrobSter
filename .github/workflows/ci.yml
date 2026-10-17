@@ -356,6 +356,17 @@ jobs:
           test -n "${digest}" || { echo "no digest in helm push output" >&2; exit 1; }
           cosign sign --yes "${CHARTS#oci://}/scrobster@${digest}"
 
+      # Artifact Hub reads its repository metadata from the "artifacthub.io"
+      # tag. Pushed every run, so an edit lands without waiting for a release.
+      # oras uses the docker login above.
+      - uses: oras-project/setup-oras@v1
+      - name: Publish the Artifact Hub metadata
+        working-directory: charts/scrobster
+        run: >-
+          oras push ghcr.io/${{ github.repository_owner }}/charts/scrobster:artifacthub.io
+          --config /dev/null:application/vnd.cncf.artifacthub.config.v1+yaml
+          artifacthub-repo.yml:application/vnd.cncf.artifacthub.repository-metadata.layer.v1.yaml
+
       # Last, so a release only ever names a commit whose image is published.
       - name: Tag the release
         if: steps.version.outputs.release == 'true'
