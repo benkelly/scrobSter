@@ -1,5 +1,9 @@
-fastapi
-uvicorn
-shazamio
-pylast
-aiohttp
+# Exact pins, so a rebuild of the same commit installs the same packages. Above
+# all, a rebuild must not pull a new shazamio (an unofficial Shazam client) that
+# breaks matching. Dependabot proposes the bumps as pull requests, and CI tests
+# each one before it merges. Tested on Python 3.12, the Dockerfile's version.
+fastapi==0.143.3
+uvicorn==0.54.0
+shazamio==0.8.1
+pylast==7.2.0
+aiohttp==3.14.5

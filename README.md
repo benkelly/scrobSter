@@ -469,3 +469,4 @@ before: the add-on cannot pull a tag that has not been built.
 - The Shazam API is unofficial and can change or block at any time. Keep `MATCH_INTERVAL` at 12 seconds or higher.
 - Scrobbles fire at match time, not at track end. This is fine for radio.
 - Run the logic self-check with `.venv/bin/python test_scrobster.py`.
+- `requirements.txt` pins exact versions, so a rebuild cannot pull a shazamio that breaks matching. Dependabot opens weekly pull requests for the pins, the GitHub Actions and the base image; CI tests each one.
