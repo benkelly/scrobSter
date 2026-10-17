@@ -1,0 +1,25 @@
+scrobSter {{ .Values.image.tag | default .Chart.AppVersion }} is starting.
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+
+Open http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}
+{{- end }}
+{{- else }}
+
+Reach it with:
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "scrobster.fullname" . }} 8000:{{ .Values.service.port }}
+and open http://localhost:8000
+{{- end }}
+
+{{- if not (or .Values.existingSecret (hasKey .Values.secretEnv "ADMIN_PASSWORD")) }}
+
+No ADMIN_PASSWORD is set, so the first start writes a random password for
+'admin' to the log:
+  kubectl --namespace {{ .Release.Namespace }} logs deploy/{{ include "scrobster.fullname" . }} | grep "first account"
+{{- end }}
+
+Add a camera on the Rooms tab with its RTSP or RTSPS address.
+{{- if not .Values.persistence.enabled }}
+
+persistence.enabled is false: accounts and history are lost when the pod goes.
+{{- end }}

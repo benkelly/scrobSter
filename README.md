@@ -287,6 +287,33 @@ Notes:
 - `SSL_CERT_FILE` is only for macOS. scrobSter ignores it when the file is
   missing, so the same `.env` works in a container.
 
+## Kubernetes (Helm)
+
+The chart is published next to the image, with the same version:
+
+```sh
+helm install scrobster oci://ghcr.io/benkelly/charts/scrobster \
+  --namespace music --create-namespace \
+  --set secretEnv.ADMIN_PASSWORD=choose-a-password \
+  --set secretEnv.LISTENBRAINZ_TOKEN=your-token
+```
+
+It runs one pod, never two, because the SQLite database on its volume and the
+queue to Shazam both belong to one process. Settings go in `env`, and anything
+secret in `secretEnv`, or in a Secret of your own named by `existingSecret`.
+Every variable in [Configuration](#configuration-environment-variables) works.
+`ingress.enabled` publishes the web page, and the volume is kept when the
+release is uninstalled. See
+[`charts/scrobster/values.yaml`](charts/scrobster/values.yaml) for the rest.
+
+Cameras need nothing extra: add one on the **Rooms** tab with its RTSP or RTSPS
+address. To record from a node's own sound card, set `hostSound.enabled=true`
+and pin the pod to that node with `nodeSelector`. Reaching `/dev/snd` needs a
+privileged container.
+
+The chart sets `TRUST_INGRESS=0`. A pod can hold Home Assistant's ingress
+address, and the app would otherwise sign that pod's requests in as the owner.
+
 ## Two ways to listen
 
 **Server microphone (default).** The Python process records the host audio
@@ -429,7 +456,9 @@ To cut a release, bump that number in the pull request. When it merges, CI
 publishes the image as `ghcr.io/benkelly/scrobster:<version>`, moves the
 matching `x.y` tag, pushes the git tag `v<version>` and opens a GitHub release
 with generated notes. A merge that does not change the number publishes only
-`latest` and the commit tag, so ordinary work needs no bump.
+`latest` and the commit tag, so ordinary work needs no bump. The Helm chart is
+published as `oci://ghcr.io/benkelly/charts/scrobster:<version>` whenever that
+version is not there yet, with the same number for the chart and the app.
 
 The Home Assistant add-on pins the exact version, so bump
 [ha-addons](https://github.com/benkelly/ha-addons) after the release, never

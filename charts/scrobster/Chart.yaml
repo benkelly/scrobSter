@@ -1,0 +1,17 @@
+apiVersion: v2
+name: scrobster
+description: Listens to a microphone or a camera, identifies the music with Shazam, and scrobbles it to Last.fm, Libre.fm, ListenBrainz or Maloja.
+type: application
+# CI packages the chart with __version__ from scrobster/__init__.py for both
+# numbers, so these only matter for a chart installed from a checkout.
+version: 0.4.0
+appVersion: "0.4.0"
+icon: https://raw.githubusercontent.com/benkelly/scrobSter/main/scrobster/static/icon.png
+home: https://github.com/benkelly/scrobSter
+sources:
+  - https://github.com/benkelly/scrobSter
+keywords:
+  - scrobbler
+  - last.fm
+  - listenbrainz
+  - shazam
