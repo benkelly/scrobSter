@@ -460,6 +460,32 @@ with generated notes. A merge that does not change the number publishes only
 published as `oci://ghcr.io/benkelly/charts/scrobster:<version>` whenever that
 version is not there yet, with the same number for the chart and the app.
 
+### Verifying
+
+CI signs the image and the chart by digest with keyless
+[cosign](https://github.com/sigstore/cosign), so a signature proves the artifact
+was pushed by this repository's workflow on `main`. The identity keeps the
+repository's own case, `benkelly/scrobSter`:
+
+```sh
+cosign verify ghcr.io/benkelly/scrobster:<version> \
+  --certificate-identity-regexp '^https://github\.com/benkelly/scrobSter/\.github/workflows/ci\.yml@refs/heads/main$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+cosign verify ghcr.io/benkelly/charts/scrobster:<version> \
+  --certificate-identity-regexp '^https://github\.com/benkelly/scrobSter/\.github/workflows/ci\.yml@refs/heads/main$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+The image also carries an SPDX SBOM and SLSA provenance from BuildKit:
+
+```sh
+docker buildx imagetools inspect ghcr.io/benkelly/scrobster:<version> \
+  --format '{{ json .SBOM }}'
+docker buildx imagetools inspect ghcr.io/benkelly/scrobster:<version> \
+  --format '{{ json .Provenance }}'
+```
+
 The Home Assistant add-on pins the exact version, so bump
 [ha-addons](https://github.com/benkelly/ha-addons) after the release, never
 before: the add-on cannot pull a tag that has not been built.
