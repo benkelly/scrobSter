@@ -305,6 +305,9 @@ Every variable in [Configuration](#configuration-environment-variables) works.
 `ingress.enabled` publishes the web page, and the volume is kept when the
 release is uninstalled. See
 [`charts/scrobster/values.yaml`](charts/scrobster/values.yaml) for the rest.
+Values are checked against
+[`charts/scrobster/values.schema.json`](charts/scrobster/values.schema.json), so
+a misspelt key or a wrong type stops the install instead of being ignored.
 
 Cameras need nothing extra: add one on the **Rooms** tab with its RTSP or RTSPS
 address. To record from a node's own sound card, set `hostSound.enabled=true`
