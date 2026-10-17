@@ -314,6 +314,9 @@ privileged container.
 The chart sets `TRUST_INGRESS=0`. A pod can hold Home Assistant's ingress
 address, and the app would otherwise sign that pod's requests in as the owner.
 
+CI installs the chart into a throwaway [kind](https://kind.sigs.k8s.io/)
+cluster on every pull request and signs in through the service.
+
 The chart is ready for [Artifact Hub](https://artifacthub.io): CI pushes
 [`charts/scrobster/artifacthub-repo.yml`](charts/scrobster/artifacthub-repo.yml)
 to the `artifacthub.io` tag next to the chart. Listing it is a manual step that

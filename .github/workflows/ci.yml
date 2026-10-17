@@ -143,8 +143,91 @@ jobs:
             'ls /usr/lib/*/alsa-lib/libasound_module_pcm_pulse.so' >/dev/null
           docker rm -f smoke
 
+  # helm template only proves the chart renders. Installing it into a real
+  # cluster proves the pod starts, the volume is writable as uid 1000, and
+  # the service reaches the app.
+  kubernetes:
+    needs: [test, chart]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Read the version
+        id: version
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' scrobster/__init__.py)"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+
+      # A pull request's image is not pushed anywhere, so build it here and
+      # hand it to the cluster directly.
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: scrobster:ci
+          cache-from: type=gha
+
+      - uses: azure/setup-helm@v4
+      # kind's default StorageClass provisions the PVC.
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: ci
+
+      - name: Install the chart
+        run: |
+          set -euo pipefail
+          kind load docker-image scrobster:ci --name ci
+          # pullPolicy Never, so a missing image fails here instead of being
+          # fetched from the registry.
+          helm install scrobster charts/scrobster \
+            --set image.repository=scrobster --set image.tag=ci \
+            --set image.pullPolicy=Never \
+            --set secretEnv.ADMIN_PASSWORD=kind-test-password \
+            --set env.LISTEN_ON_START=0 \
+            --wait --timeout 3m
+
+      - name: Smoke test the release
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          kubectl port-forward svc/scrobster 8000:8000 > /tmp/port-forward.log 2>&1 &
+          for _ in $(seq 1 30); do
+            curl -sf http://localhost:8000/ >/dev/null && break
+            sleep 2
+          done
+          curl -sf http://localhost:8000/ >/dev/null
+          # The API must refuse an anonymous caller.
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8000/api/status)
+          test "$code" = "401" || { echo "expected 401, got $code"; exit 1; }
+          # And accept the account made from secretEnv.
+          curl -sf -c /tmp/jar -X POST http://localhost:8000/api/login \
+            -H 'content-type: application/json' \
+            -d '{"username":"admin","password":"kind-test-password"}' >/dev/null
+          curl -sf -b /tmp/jar http://localhost:8000/api/status > /tmp/status.json
+          grep -q '"listening":false' /tmp/status.json
+          grep -q "\"version\":\"${VERSION}\"" /tmp/status.json
+          # podSecurityContext must hold, and the database must land on the
+          # volume rather than fail for want of write access.
+          uid=$(kubectl exec deploy/scrobster -- id -u)
+          test "$uid" = "1000" || { echo "expected uid 1000, got $uid"; exit 1; }
+          kubectl exec deploy/scrobster -- test -f /data/scrobster.db
+
+      - name: Show the pod on failure
+        if: failure()
+        run: |
+          kubectl get all,pvc
+          kubectl describe pod -l app.kubernetes.io/instance=scrobster
+          kubectl logs -l app.kubernetes.io/instance=scrobster --tail=200 || true
+          cat /tmp/port-forward.log || true
+
   release:
-    needs: docker
+    needs: [docker, kubernetes]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
