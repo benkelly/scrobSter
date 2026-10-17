@@ -100,7 +100,7 @@ jobs:
       # Build for this runner first, so the image is proven to start before
       # anything is published.
       - name: Build for smoke test
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           load: true
@@ -174,7 +174,7 @@ jobs:
       # hand it to the cluster directly.
       - uses: docker/setup-buildx-action@v3
       - name: Build the image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           load: true
@@ -308,7 +308,7 @@ jobs:
       # BuildKit attaches SLSA provenance and an SPDX SBOM to the pushed image.
       - name: Build and push
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
