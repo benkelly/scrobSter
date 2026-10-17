@@ -1,0 +1,89 @@
+image:
+  repository: ghcr.io/benkelly/scrobster
+  # Defaults to the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# Plain settings, passed as environment variables. Every variable in the
+# README's configuration table works here, for example:
+#   MATCH_INTERVAL: "20"
+#   RECOGNITION_GAP_SECONDS: "5"
+#   LISTEN_ON_START: "0"
+env: {}
+
+# Settings that hold a secret, kept in a Secret the chart creates. For
+# example ADMIN_PASSWORD, LISTENBRAINZ_TOKEN, LASTFM_API_KEY,
+# LASTFM_API_SECRET, LASTFM_SESSION_KEY, MALOJA_KEY.
+# Without ADMIN_PASSWORD the first start writes a random password to the log.
+secretEnv: {}
+
+# Or name a Secret you manage yourself. Each of its keys becomes an
+# environment variable, and secretEnv is then ignored.
+existingSecret: ""
+
+# One SQLite database holds accounts, rooms and history.
+persistence:
+  enabled: true
+  # Use a claim you made yourself instead of creating one.
+  existingClaim: ""
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 1Gi
+
+# Cameras need nothing here: a room reads RTSP or RTSPS over the network.
+# To record from the node's own sound card, mount /dev/snd. Reaching a host
+# device needs a privileged container, and the pod has to land on the node
+# with the sound card, so pin it with nodeSelector.
+hostSound:
+  enabled: false
+  # The audio group in the image, which may open /dev/snd.
+  audioGroup: 29
+
+service:
+  type: ClusterIP
+  port: 8000
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: scrobster.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: scrobster-tls
+  #    hosts:
+  #      - scrobster.example.com
+
+resources: {}
+#  requests:
+#    cpu: 50m
+#    memory: 128Mi
+#  limits:
+#    memory: 512Mi
+
+podAnnotations: {}
+podLabels: {}
+
+# The image's scrobster user owns /data, and fsGroup gives it a fresh volume.
+podSecurityContext:
+  runAsUser: 1000
+  runAsGroup: 1000
+  runAsNonRoot: true
+  fsGroup: 1000
+  fsGroupChangePolicy: OnRootMismatch
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

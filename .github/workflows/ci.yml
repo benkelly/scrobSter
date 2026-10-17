@@ -28,8 +28,24 @@ jobs:
           python -m compileall -q scrobster
           python -c "from scrobster import app, auth, listener, scrobble, db"
 
+  chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: azure/setup-helm@v4
+      - name: Lint and render the chart
+        run: |
+          set -euo pipefail
+          helm lint charts/scrobster
+          helm lint charts/scrobster --set hostSound.enabled=true \
+            --set ingress.enabled=true --set secretEnv.ADMIN_PASSWORD=x
+          helm template ci charts/scrobster > /tmp/chart.yaml
+          # The pod must never trust Home Assistant's ingress address, which a
+          # pod can hold too.
+          grep -A1 'name: TRUST_INGRESS' /tmp/chart.yaml | grep -q 'value: "0"'
+
   docker:
-    needs: test
+    needs: [test, chart]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -204,6 +220,27 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # The chart carries __version__ for both numbers. It is pushed when that
+      # version is not published yet, so the first run after the chart was
+      # added publishes it, and every release after that.
+      - uses: azure/setup-helm@v4
+      - name: Publish the Helm chart
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          CHARTS: oci://ghcr.io/${{ github.repository_owner }}/charts
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io \
+            --username "${{ github.actor }}" --password-stdin
+          if helm show chart "${CHARTS}/scrobster" --version "${VERSION}" \
+              > /dev/null 2>&1; then
+            echo "Chart ${VERSION} is already published."
+            exit 0
+          fi
+          helm package charts/scrobster --version "${VERSION}" \
+            --app-version "${VERSION}" --destination /tmp/chart
+          helm push "/tmp/chart/scrobster-${VERSION}.tgz" "${CHARTS}"
 
       # Last, so a release only ever names a commit whose image is published.
       - name: Tag the release
