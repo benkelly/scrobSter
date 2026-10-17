@@ -292,7 +292,7 @@ jobs:
       # a workflow does not start another one, so the version tags have to be
       # applied here rather than by the tag push at the end. The semver lines
       # still cover a tag pushed by hand.
-      - uses: docker/metadata-action@v5
+      - uses: docker/metadata-action@v6
         id: meta
         with:
           images: ${{ env.IMAGE }}
