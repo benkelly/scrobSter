@@ -1,0 +1,144 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "scrobSter chart values",
+  "type": "object",
+  "additionalProperties": false,
+  "definitions": {
+    "envMap": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+      "additionalProperties": { "type": ["string", "number", "boolean"] }
+    }
+  },
+  "properties": {
+    "global": {
+      "description": "Values shared with a parent chart, unused here.",
+      "type": "object"
+    },
+    "image": {
+      "description": "The container image.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": { "description": "Image repository.", "type": "string", "minLength": 1 },
+        "tag": { "description": "Image tag; empty means the chart's appVersion.", "type": "string" },
+        "pullPolicy": {
+          "description": "When the kubelet pulls the image.",
+          "type": "string",
+          "enum": ["Always", "IfNotPresent", "Never"]
+        }
+      }
+    },
+    "imagePullSecrets": {
+      "description": "Secrets for pulling the image, as [{name: ...}].",
+      "type": "array"
+    },
+    "nameOverride": { "description": "Replaces the chart name in resource names.", "type": "string" },
+    "fullnameOverride": { "description": "Replaces the full resource name.", "type": "string" },
+    "env": {
+      "description": "Plain settings, passed as environment variables.",
+      "$ref": "#/definitions/envMap"
+    },
+    "secretEnv": {
+      "description": "Secret settings, kept in a Secret the chart creates.",
+      "$ref": "#/definitions/envMap"
+    },
+    "existingSecret": {
+      "description": "A Secret you manage, whose keys become environment variables; secretEnv is then ignored.",
+      "type": "string"
+    },
+    "persistence": {
+      "description": "The volume that holds the SQLite database.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "description": "Keep the database on a PersistentVolumeClaim.", "type": "boolean" },
+        "existingClaim": { "description": "A claim you made yourself.", "type": "string" },
+        "storageClass": { "description": "Storage class of the new claim.", "type": "string" },
+        "accessMode": {
+          "description": "Access mode of the new claim.",
+          "type": "string",
+          "enum": ["ReadWriteOnce", "ReadWriteMany", "ReadWriteOncePod", "ReadOnlyMany"]
+        },
+        "size": { "description": "Size of the new claim, such as 1Gi.", "type": ["string", "integer"] }
+      }
+    },
+    "hostSound": {
+      "description": "Record from the node's own sound card by mounting /dev/snd.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "description": "Mount /dev/snd in a privileged container.", "type": "boolean" },
+        "audioGroup": { "description": "The audio group that may open /dev/snd.", "type": "integer", "minimum": 0 }
+      }
+    },
+    "service": {
+      "description": "The Service in front of the pod.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "description": "Service type.",
+          "type": "string",
+          "enum": ["ClusterIP", "NodePort", "LoadBalancer"]
+        },
+        "port": { "description": "Service port.", "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "ingress": {
+      "description": "An Ingress that publishes the web page.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "description": "Create the Ingress.", "type": "boolean" },
+        "className": { "description": "IngressClass name.", "type": "string" },
+        "annotations": { "description": "Annotations on the Ingress.", "type": "object" },
+        "hosts": {
+          "description": "Hosts and the paths each one routes.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["host"],
+            "properties": {
+              "host": { "description": "Host name.", "type": "string" },
+              "paths": {
+                "description": "Paths routed to the service.",
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["path", "pathType"],
+                  "properties": {
+                    "path": { "description": "URL path.", "type": "string" },
+                    "pathType": {
+                      "description": "How the path matches.",
+                      "type": "string",
+                      "enum": ["Prefix", "Exact", "ImplementationSpecific"]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tls": {
+          "description": "TLS entries, as [{secretName, hosts}].",
+          "type": "array",
+          "items": { "type": "object" }
+        }
+      }
+    },
+    "resources": { "description": "Container resource requests and limits.", "type": "object" },
+    "podAnnotations": { "description": "Extra pod annotations.", "type": "object" },
+    "podLabels": { "description": "Extra pod labels.", "type": "object" },
+    "podSecurityContext": { "description": "Pod security context.", "type": "object" },
+    "securityContext": {
+      "description": "Container security context, replaced by privileged when hostSound is enabled.",
+      "type": "object"
+    },
+    "nodeSelector": { "description": "Node labels the pod must land on.", "type": "object" },
+    "tolerations": { "description": "Pod tolerations.", "type": "array" },
+    "affinity": { "description": "Pod affinity rules.", "type": "object" }
+  }
+}

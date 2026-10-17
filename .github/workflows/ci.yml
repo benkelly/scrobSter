@@ -43,6 +43,15 @@ jobs:
           # The pod must never trust Home Assistant's ingress address, which a
           # pod can hold too.
           grep -A1 'name: TRUST_INGRESS' /tmp/chart.yaml | grep -q 'value: "0"'
+          # values.schema.json must reject a typo, a wrong type and a bad enum,
+          # rather than letting Helm silently ignore them. set -e skips a
+          # negated command, hence the explicit exit.
+          for bad in persistance.enabled=false service.port=abc \
+              image.pullPolicy=Sometimes env.bad-name=1; do
+            ! helm template ci charts/scrobster --set "${bad}" > /dev/null || exit 1
+          done
+          ! helm template ci charts/scrobster \
+            --set-string hostSound.enabled=yes > /dev/null || exit 1
 
   docker:
     needs: [test, chart]
