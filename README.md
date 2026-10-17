@@ -314,6 +314,9 @@ privileged container.
 The chart sets `TRUST_INGRESS=0`. A pod can hold Home Assistant's ingress
 address, and the app would otherwise sign that pod's requests in as the owner.
 
+CI installs the chart into a throwaway [kind](https://kind.sigs.k8s.io/)
+cluster on every pull request and signs in through the service.
+
 ## Two ways to listen
 
 **Server microphone (default).** The Python process records the host audio
