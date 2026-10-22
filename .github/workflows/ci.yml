@@ -15,7 +15,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -31,7 +31,7 @@ jobs:
   chart:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: azure/setup-helm@v4
       - name: Lint and render the chart
         run: |
@@ -59,7 +59,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # A merge to main releases when __version__ carries a number that has no
       # tag yet. That keeps one number in one place: bump it in the pull
@@ -161,7 +161,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - name: Read the version
         id: version
@@ -246,7 +246,7 @@ jobs:
       # issued against the run's OIDC token.
       id-token: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       # A merge to main releases when __version__ carries a number that has no
       # tag yet. That keeps one number in one place: bump it in the pull
