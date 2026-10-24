@@ -90,6 +90,10 @@ def set_rates(gap=None, interval=None):
         RECOGNITION_GAP_SECONDS = float(gap)
     if interval is not None:
         MATCH_INTERVAL = int(interval)
+# While a room keeps hearing the song it just matched twice, it stops asking
+# Shazam for up to this many seconds, or until the song should end. 0 asks
+# every cycle.
+SKIP_KNOWN_SECONDS = int(os.environ.get("SKIP_KNOWN_SECONDS", "60"))
 RESCROBBLE_MINUTES = int(os.environ.get("RESCROBBLE_MINUTES", "30"))
 # Clear the playing-now mark after this long with no match. Keep it well above one
 # song, because matches drop out during quiet passages and the mark would flicker.

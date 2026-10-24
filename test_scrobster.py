@@ -212,6 +212,7 @@ def main():
     check_mqtt()
     check_event_stream()
     check_restart()
+    check_known_song()
     print("ok")
 
 
@@ -1249,6 +1250,78 @@ def check_restart():
         finally:
             mqtt.broker_settings, config.SUPERVISOR_TOKEN = previous
     assert asyncio.run(no_supervisor()) is None, "outside an add-on, give up at once"
+
+
+
+def check_known_song():
+    """A room that hears the song it matched twice stops asking Shazam until
+    the song should end, at most SKIP_KNOWN_SECONDS, and silence or another
+    song makes it ask again."""
+    import asyncio
+    from scrobster import accounts, config, db, enrich, listener as listener_mod
+
+    known_for = listener_mod.known_for
+    song = {"track_key": "k", "offset": 100.0}
+    assert known_for(None, song, 300, 15, 60) == 0, "once is not enough"
+    assert known_for("other", song, 300, 15, 60) == 0, "a new song is not known"
+    assert known_for("k", None, 300, 15, 60) == 0, "no match, nothing known"
+    assert known_for("k", song, 300, 15, 0) == 0, "0 turns it off"
+    assert known_for("k", song, None, 15, 60) == 60, "no length: the cap"
+    assert known_for("k", song, 300, 15, 60) == 60, "far from the end: the cap"
+    assert known_for("k", song, 140, 15, 60) == 140 - 100 - 15 - 5, "ask before it ends"
+    assert known_for("k", song, 110, 15, 60) == 0, "already ending"
+    assert known_for("k", {"track_key": "k", "offset": None}, 300, 15, 60) == 60
+
+    loud, quiet = _wav(8000), _wav(0)
+    heard = []  # what each cycle recorded
+
+    async def scenario():
+        house = listener_mod.Listener()
+        await house.sync_rooms()
+        room = house.rooms[min(house.rooms)]
+        asked = []
+
+        async def capture(**kwargs):
+            await asyncio.sleep(0)
+            return heard.pop(0) if heard else quiet
+
+        async def recognize(wav):
+            asked.append(wav)
+            return {"track": {"key": "k", "title": "T", "subtitle": "A", "isrc": "X"},
+                    "matches": [{"offset": 50.0}]}
+        saved = listener_mod.capture_chunk, config.MATCH_INTERVAL, config.SKIP_KNOWN_SECONDS
+        listener_mod.capture_chunk = capture
+        house.recognize = recognize
+        config.MATCH_INTERVAL, config.SKIP_KNOWN_SECONDS = 0, 60
+        try:
+            heard.extend([loud] * 5 + [quiet] + [loud] * 2)
+            task = asyncio.create_task(house._loop(room))
+            while heard:
+                await asyncio.sleep(0.01)
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        finally:
+            listener_mod.capture_chunk, config.MATCH_INTERVAL, config.SKIP_KNOWN_SECONDS = saved
+        return len(asked), room.skipped
+
+    with tempfile.TemporaryDirectory() as d:
+        saved = config.DB_PATH
+        config.DB_PATH = os.path.join(d, "known.db")
+        try:
+            db.init()
+            accounts.create_user("admin", "password123", is_admin=True)
+            enrich._mbids["X"] = {}  # no network: MusicBrainz is already "asked"
+            asked, skipped = asyncio.run(scenario())
+        finally:
+            config.DB_PATH = saved
+            enrich._mbids.pop("X", None)
+    # Two asks make the song known, three cycles skip, silence forgets it, and
+    # the next two cycles must ask again before skipping resumes.
+    assert (asked, skipped) == (4, 3), (asked, skipped)
 
 
 if __name__ == "__main__":
