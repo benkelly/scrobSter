@@ -42,12 +42,15 @@ USER_REFRESH_SECONDS = 60
 # How long to collect the retained discovery messages after subscribing.
 RETAINED_WAIT_SECONDS = 2
 RECONNECT_SECONDS = (5, 300)
+# Inside an add-on, how often to ask again for a broker that is not there yet,
+# such as Mosquitto installed after scrobSter started.
+BROKER_RETRY_SECONDS = 300
 PROJECT_URL = "https://github.com/benkelly/scrobSter"
 
 
 # --- where to connect ------------------------------------------------------------
 
-async def broker_settings() -> dict | None:
+async def broker_settings(warn=True) -> dict | None:
     """The broker to use, or None to stay off.
 
     MQTT_HOST names one. Inside a Home Assistant add-on with `services:
@@ -64,9 +67,9 @@ async def broker_settings() -> dict | None:
         found = await _supervisor_broker()
         if found:
             return found
-    if config.MQTT_ENABLED in ("1", "true", "yes", "on"):
+    if warn and config.MQTT_ENABLED in ("1", "true", "yes", "on"):
         log.warning("MQTT is turned on but no broker was found: install the Mosquitto"
-                    " broker add-on and restart, or set MQTT_HOST")
+                    " broker add-on, or set MQTT_HOST")
     return None
 
 
@@ -412,7 +415,7 @@ class Publisher:
 
     async def run(self):
         """Keep a connection to the broker for as long as scrobSter runs."""
-        settings = await broker_settings()
+        settings = await self._find_broker()
         if settings is None:
             return
         topics = Topics(config.MQTT_TOPIC, config.MQTT_DISCOVERY_PREFIX, instance_id())
@@ -427,6 +430,21 @@ class Publisher:
             self.connected = False
             await asyncio.sleep(wait)
             wait = min(wait * 2, RECONNECT_SECONDS[1])
+            if not config.MQTT_HOST:
+                # The Supervisor's broker may have moved or changed its password.
+                settings = await broker_settings(warn=False) or settings
+
+    async def _find_broker(self):
+        """The broker, or None to stay off. Inside an add-on, keep asking: the
+        Mosquitto add-on may be installed after scrobSter started."""
+        settings = await broker_settings()
+        while settings is None and config.SUPERVISOR_TOKEN \
+                and config.MQTT_ENABLED not in ("0", "false", "no", "off"):
+            await asyncio.sleep(BROKER_RETRY_SECONDS)
+            settings = await broker_settings(warn=False)
+            if settings:
+                log.info("MQTT: Home Assistant now offers a broker")
+        return settings
 
     async def _session(self, settings, topics):
         will = aiomqtt.Will(topics.status, "offline", qos=1, retain=True)

@@ -144,6 +144,10 @@ def should_scrobble(key, now, offset, last_plays, fallback_cooldown_s) -> bool:
     return offset < expected - REPEAT_TOLERANCE_SECONDS
 
 
+def play_memory_seconds(fallback_cooldown_s) -> float:
+    return fallback_cooldown_s + PLAY_MEMORY_SECONDS
+
+
 def forget_old_plays(last_plays, now, fallback_cooldown_s):
     """Drop plays too old for should_scrobble() to answer no, so the duplicate
     filter does not keep every track ever heard until a restart.
@@ -152,7 +156,7 @@ def forget_old_plays(last_plays, now, fallback_cooldown_s):
     the longer of the two also covers a match judged with an earlier `now`,
     while a browser clip prunes during its network calls.
     """
-    keep_s = fallback_cooldown_s + PLAY_MEMORY_SECONDS
+    keep_s = play_memory_seconds(fallback_cooldown_s)
     for key in [k for k, (ts, _) in last_plays.items() if now - ts >= keep_s]:
         del last_plays[key]
 
@@ -534,11 +538,18 @@ class Listener:
         self.last_rate_limited = None  # unix time of the last 429
         # Set and cleared at once, to wake every room's wait after a rate change.
         self._rates_changed = asyncio.Event()
-        # (user_id, track_key) -> (ts, offset); in memory, a restart forgets
+        # (user_id, track_key) -> (ts, offset), kept in the database too, see
+        # restore_plays()
         self._last_plays = {}
         self._now_playing = {}  # user_id -> (track_key, ts) of the last mark
         self._last_match_at = {}  # user_id -> when their audio was last identified
         self.browser_matches = {}  # user_id -> their own last browser clip
+
+    def restore_plays(self):
+        """Read back the plays scrobbled before a restart. Without them, a
+        restart in the middle of a song scrobbles it a second time."""
+        keep_s = play_memory_seconds(config.RESCROBBLE_MINUTES * 60)
+        self._last_plays = db.load_plays(int(time.time() - keep_s))
 
     @property
     def listening(self) -> bool:
@@ -794,6 +805,8 @@ class Listener:
                                    config.RESCROBBLE_MINUTES * 60):
                 continue
             self._last_plays[key] = (now, info.get("offset"))
+            db.save_play(user["id"], info["track_key"], now, info.get("offset"),
+                         int(now - play_memory_seconds(config.RESCROBBLE_MINUTES * 60)))
             results = await scrobble.scrobble_all(credentials, info["artist"],
                                                   info["title"], info["album"], now,
                                                   extra)
@@ -821,6 +834,7 @@ async def _main():
     db.init()
     accounts.ensure_first_user()
     listener = Listener()
+    listener.restore_plays()
     await listener.sync_rooms()
     listener.start()
     await asyncio.gather(*(room.task for room in listener.rooms.values() if room.task))
