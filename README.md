@@ -417,7 +417,13 @@ published.
 
 Each install has its own instance id, kept in the database, so two installs can
 share one broker. Inside scrobSter, every change goes through one event stream
-(`scrobster/events.py`), and MQTT is one reader of it.
+(`scrobster/events.py`). MQTT is one reader of it, and `GET /api/events` serves
+it to any other client, such as a script or a future Home Assistant
+integration:
+
+```sh
+curl -N -H "Authorization: Bearer your-token" http://your-host:8000/api/events
+```
 
 ## API
 
@@ -428,6 +434,7 @@ through Home Assistant ingress.
 |---|---|
 | `POST /api/login` `{username, password}` | sign in, sets a session cookie |
 | `GET /api/status` | version, listening state, last match, profile links, and `rooms`: each room's state, level and last match. `level_db` and `last_error` describe the first room. `mqtt` says whether the broker is connected |
+| `GET /api/events` | what happens, as it happens, as [server-sent events](https://developer.mozilla.org/docs/Web/API/Server-sent_events). Each event is named by its kind: `match`, `scrobble`, `cleared`, `listening`, `rooms`, `member`, `users`, `services`, `rates`. You see what the rest of the API would show you. `resync` means events were lost, so read `/api/status` again |
 | `GET /api/levels` | `{room_id: dBFS}`: the live peak of each room that is listening, or `null` between two recordings |
 | `POST /api/listen` `{"on": true}` | start or stop listening in every room that is turned on. Administrator only |
 | `POST /api/match` (raw audio body) | identify one clip and scrobble it for the caller |
