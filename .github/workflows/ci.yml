@@ -359,7 +359,7 @@ jobs:
       # Artifact Hub reads its repository metadata from the "artifacthub.io"
       # tag. Pushed every run, so an edit lands without waiting for a release.
       # oras uses the docker login above.
-      - uses: oras-project/setup-oras@v1
+      - uses: oras-project/setup-oras@v2
       - name: Publish the Artifact Hub metadata
         working-directory: charts/scrobster
         run: >-
