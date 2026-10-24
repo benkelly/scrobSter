@@ -2,6 +2,8 @@
 
 # scrobSter
 
+[![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/scrobster)](https://artifacthub.io/packages/search?repo=scrobster)
+
 Self-hosted background-audio scrobbler. It listens to audio inputs (a mic, a line-in, or the audio of your security cameras), identifies songs with Shazam, and scrobbles them to Last.fm, Libre.fm, ListenBrainz, and Maloja. Point it at a radio, a TV, or every room in the house.
 
 <img width="1012" height="991" alt="image" src="https://github.com/user-attachments/assets/14454c0a-fd00-415c-8560-9b9a88de72b6" />
@@ -320,13 +322,11 @@ address, and the app would otherwise sign that pod's requests in as the owner.
 CI installs the chart into a throwaway [kind](https://kind.sigs.k8s.io/)
 cluster on every pull request and signs in through the service.
 
-The chart is ready for [Artifact Hub](https://artifacthub.io): CI pushes
-[`charts/scrobster/artifacthub-repo.yml`](charts/scrobster/artifacthub-repo.yml)
-to the `artifacthub.io` tag next to the chart. Listing it is a manual step that
-needs an Artifact Hub account: add a Helm charts repository with the URL
-`oci://ghcr.io/benkelly/charts/scrobster`, then copy the repository ID it shows
-into `repositoryID` in that file. Without the ID the listing still works, just
-without the Verified Publisher badge.
+The chart is listed on
+[Artifact Hub](https://artifacthub.io/packages/search?repo=scrobster). CI
+pushes [`charts/scrobster/artifacthub-repo.yml`](charts/scrobster/artifacthub-repo.yml)
+to the `artifacthub.io` tag next to the chart, and its `repositoryID` proves
+the listing belongs to this repository.
 
 ## Two ways to listen
 
