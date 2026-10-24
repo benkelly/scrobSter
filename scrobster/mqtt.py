@@ -65,8 +65,8 @@ async def broker_settings() -> dict | None:
         if found:
             return found
     if config.MQTT_ENABLED in ("1", "true", "yes", "on"):
-        log.warning("MQTT is turned on but no broker was found: set MQTT_HOST, or"
-                    " install the Mosquitto add-on")
+        log.warning("MQTT is turned on but no broker was found: install the Mosquitto"
+                    " broker add-on and restart, or set MQTT_HOST")
     return None
 
 
@@ -76,8 +76,8 @@ async def _supervisor_broker() -> dict | None:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
             async with s.get("http://supervisor/services/mqtt", headers=headers) as r:
                 if r.status != 200:
-                    # 400 means no add-on provides MQTT, which is fine.
-                    log.info("MQTT: Home Assistant has no broker to offer (%s)", r.status)
+                    # 400 means no add-on provides MQTT.
+                    log.debug("MQTT: the Supervisor answered %s", r.status)
                     return None
                 data = (await r.json()).get("data") or {}
     except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
