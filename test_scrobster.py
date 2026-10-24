@@ -213,6 +213,7 @@ def main():
     check_event_stream()
     check_restart()
     check_known_song()
+    check_librefm_scrobble()
     print("ok")
 
 
@@ -1322,6 +1323,43 @@ def check_known_song():
     # Two asks make the song known, three cycles skip, silence forgets it, and
     # the next two cycles must ask again before skipping resumes.
     assert (asked, skipped) == (4, 3), (asked, skipped)
+
+
+
+def check_librefm_scrobble():
+    """Libre.fm gets one scrobble in the plain form, which it accepts, rather
+    than pylast's indexed batch form, which it answers with "Invalid
+    parameters". Last.fm keeps pylast's own call."""
+    import pylast
+    from scrobster import scrobble
+
+    assert scrobble.scrobble_params("A", "T", None, 1700000000) == {
+        "artist": "A", "track": "T", "timestamp": "1700000000"}, "no album, no key"
+    assert scrobble.scrobble_params("A", "T", "Al", 1)["album"] == "Al"
+
+    sent, scrobbled = [], []
+
+    class Request:
+        def __init__(self, network, method, params):
+            sent.append((network, method, params))
+
+        def execute(self):
+            pass
+
+    class Network:
+        def scrobble(self, **kwargs):
+            scrobbled.append(kwargs)
+    saved = pylast._Request, scrobble._pylast_network
+    pylast._Request, scrobble._pylast_network = Request, lambda service, data: Network()
+    try:
+        scrobble._pylast_scrobble("librefm", {}, "A", "T", "Al", 5)
+        scrobble._pylast_scrobble("lastfm", {}, "A", "T", "Al", 5)
+    finally:
+        pylast._Request, scrobble._pylast_network = saved
+    assert [(m, p) for _, m, p in sent] == [("track.scrobble", {
+        "artist": "A", "track": "T", "timestamp": "5", "album": "Al"})], sent
+    assert not any("[" in key for _, _, p in sent for key in p), "no indexed keys"
+    assert scrobbled == [{"artist": "A", "title": "T", "album": "Al", "timestamp": 5}]
 
 
 if __name__ == "__main__":
