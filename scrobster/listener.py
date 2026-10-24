@@ -24,7 +24,7 @@ import aiohttp
 from shazamio import Shazam
 from shazamio.interfaces.client import HTTPClientInterface
 
-from . import accounts, config, db, enrich, rooms, scrobble
+from . import accounts, config, db, enrich, events, rooms, scrobble
 
 log = logging.getLogger("scrobster")
 
@@ -568,6 +568,7 @@ class Listener:
                 await room.stop()
         if not self.listening:
             await self._clear_all()
+        events.emit("rooms")
 
     def _start_room(self, room):
         if not room.running:
@@ -582,16 +583,20 @@ class Listener:
         for room in self.rooms.values():
             if room.enabled:
                 self._start_room(room)
+        events.emit("listening", on=True)
 
     async def stop(self):
         self.running = False
         for room in self.rooms.values():
             await room.stop()
         await self._clear_all()
+        events.emit("listening", on=False)
 
     async def _clear_all(self):
         """Stopping on purpose means nothing is playing."""
         marks, self._now_playing = list(self._now_playing), {}
+        if marks:
+            events.emit("cleared", users=marks)
         for user_id in marks:
             await scrobble.clear_now_playing_all(accounts.get_credentials(user_id))
 
@@ -600,6 +605,23 @@ class Listener:
         than after the old, possibly long, wait."""
         self._rates_changed.set()
         self._rates_changed.clear()
+        events.emit("rates")
+
+    def save_rates(self, gap=None, interval=None):
+        """Keep rates chosen by an administrator, which outrank the environment,
+        and apply them now. None keeps a value. The caller checks the ranges."""
+        for key, value in (("recognition_gap_seconds", gap), ("match_interval", interval)):
+            if value is not None:
+                db.set_setting(key, value)
+        config.set_rates(gap, interval)
+        self.rates_changed()
+
+    def reset_rates(self):
+        """Forget the rates chosen by an administrator, back to the environment."""
+        for key in ("recognition_gap_seconds", "match_interval"):
+            db.set_setting(key, None)
+        config.set_rates(config.ENV_RECOGNITION_GAP_SECONDS, config.ENV_MATCH_INTERVAL)
+        self.rates_changed()
 
     def requests_recently(self) -> int:
         """Shazam requests in the last REQUEST_WINDOW_SECONDS, for tuning."""
@@ -710,6 +732,7 @@ class Listener:
                  config.NOW_PLAYING_STOP_SECONDS)
         for user_id in stale:
             self._now_playing.pop(user_id, None)
+        events.emit("cleared", users=stale)
         for user_id in stale:
             await scrobble.clear_now_playing_all(accounts.get_credentials(user_id))
 
@@ -740,6 +763,8 @@ class Listener:
             room.last_match = match
         for user in users:
             self._last_match_at[user["id"]] = now
+        events.emit("match", room_id=room.id if room else None,
+                    users=[user["id"] for user in users], match=match)
         forget_old_plays(self._last_plays, now, config.RESCROBBLE_MINUTES * 60)
         match_id = None  # written once, and only when somebody scrobbles
         extra = None  # looked up once, and only for somebody who can receive it
@@ -781,6 +806,7 @@ class Listener:
                                         info["art_url"], source,
                                         room.name if room else None)
             db.add_scrobbles(match_id, user["id"], results)
+            events.emit("scrobble", user_id=user["id"], match_id=match_id, results=results)
             log.info("scrobbled for %s%s: %s - %s -> %s", user["username"],
                      f" from {room.name}" if room else "",
                      info["artist"], info["title"], results)

@@ -7,3 +7,5 @@ uvicorn==0.54.0
 shazamio==0.8.1
 pylast==7.2.0
 aiohttp==3.14.5
+aiomqtt==2.5.1
+paho-mqtt==2.1.0

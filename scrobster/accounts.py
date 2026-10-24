@@ -11,7 +11,7 @@ import logging
 import secrets
 import time
 
-from . import config, db, rooms
+from . import config, db, events, rooms
 
 log = logging.getLogger("scrobster")
 
@@ -62,6 +62,7 @@ def create_user(username, password, is_admin=False, room_mic=False) -> dict:
         user_id = cur.lastrowid
     if room_mic:
         rooms.join_all(user_id)
+    events.emit("users")
     # Read after the block, because the insert commits when the block ends and a
     # second connection cannot see it before that.
     return get_user(user_id)
@@ -126,6 +127,7 @@ def update_user(user_id, *, is_admin=None, password=None, keep_session=None):
         if password is not None:
             c.execute("DELETE FROM sessions WHERE user_id=? AND token IS NOT ?",
                       (user_id, keep_session))
+    events.emit("users")
     return get_user(user_id)
 
 
@@ -138,6 +140,7 @@ def is_last_admin(user_id) -> bool:
 def delete_user(user_id):
     with db._conn() as c:
         c.execute("DELETE FROM users WHERE id=?", (user_id,))
+    events.emit("users")
 
 
 def new_api_token(user_id) -> str:
@@ -230,12 +233,14 @@ def set_credential(user_id, service, data: dict):
         c.execute("INSERT INTO credentials(user_id, service, data) VALUES(?,?,?)"
                   " ON CONFLICT(user_id, service) DO UPDATE SET data=excluded.data",
                   (user_id, service, json.dumps(data)))
+    events.emit("services", user_id=user_id)
 
 
 def delete_credential(user_id, service):
     with db._conn() as c:
         c.execute("DELETE FROM credentials WHERE user_id=? AND service=?",
                   (user_id, service))
+    events.emit("services", user_id=user_id)
 
 
 # --- first run -------------------------------------------------------------

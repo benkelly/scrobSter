@@ -9,7 +9,7 @@ import re
 import time
 from urllib.parse import unquote, urlsplit
 
-from . import db
+from . import db, events
 
 KINDS = ("device", "stream")
 STREAM_SCHEMES = ("rtsp", "rtsps", "http", "https")
@@ -182,9 +182,11 @@ def set_member(room_id, user_id, on: bool):
         else:
             c.execute("DELETE FROM room_members WHERE room_id=? AND user_id=?",
                       (room_id, user_id))
+    events.emit("member", room_id=room_id, user_id=user_id, on=bool(on))
 
 
 def join_all(user_id):
     with db._conn() as c:
         c.execute("INSERT OR IGNORE INTO room_members(room_id, user_id)"
                   " SELECT id, ? FROM rooms", (user_id,))
+    events.emit("member", room_id=None, user_id=user_id, on=True)

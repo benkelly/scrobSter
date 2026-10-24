@@ -251,6 +251,14 @@ def recent(user_id, limit=50):
     return out
 
 
+def scrobbled_since(user_id, ts) -> int:
+    """How many plays a user scrobbled from ts on, to any service."""
+    with _conn() as c:
+        return c.execute("SELECT COUNT(DISTINCT m.id) FROM scrobbles s"
+                         " JOIN matches m ON m.id = s.match_id"
+                         " WHERE s.user_id = ? AND m.ts >= ?", (user_id, ts)).fetchone()[0]
+
+
 # --- settings ----------------------------------------------------------------
 
 def get_setting(key, default=None):
