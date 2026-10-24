@@ -161,6 +161,28 @@ def forget_old_plays(last_plays, now, fallback_cooldown_s):
         del last_plays[key]
 
 
+# Ask Shazam again this long before a known song should end, so the next one
+# is caught as it starts.
+SONG_END_MARGIN_SECONDS = 5
+
+
+def known_for(prev_key, info, length, elapsed, cap) -> float:
+    """How long a room may go without asking Shazam after this match.
+
+    Only a song matched twice in a row counts as known, so one wrong match
+    never silences a room. It stays known for at most `cap` seconds, which
+    bounds how late a song changed half-way is noticed, and no longer than
+    the song's end when MusicBrainz knows its `length`. `elapsed` is the time
+    since the clip started, which is where `offset` points.
+    """
+    if cap <= 0 or not info or info["track_key"] != prev_key:
+        return 0
+    if length and info.get("offset") is not None:
+        left = length - info["offset"] - elapsed - SONG_END_MARGIN_SECONDS
+        return max(0.0, min(cap, left))
+    return cap
+
+
 def peak_dbfs(wav: bytes) -> float:
     """Peak level of 16-bit WAV bytes, in dBFS. Digital silence returns -99.0.
 
@@ -458,6 +480,11 @@ class Room:
         self.reset_input()
         self.last_attempt = None
         self.attempts = 0
+        # Shazam is not asked again while the room hears a song it knows,
+        # see known_for().
+        self.known_key = None
+        self.known_until = 0.0  # monotonic
+        self.skipped = 0
 
     def update(self, row) -> bool:
         """Take the saved settings. True when the input itself changed."""
@@ -473,6 +500,8 @@ class Room:
 
     def reset_input(self):
         """Forget what the previous input reported, after it changed."""
+        self.known_key = None
+        self.known_until = 0.0
         self.last_level_db = None
         self._live_levels = collections.deque()  # (monotonic, dBFS) per block
         self.last_error = None
@@ -684,16 +713,22 @@ class Listener:
                 room.last_attempt = int(time.time())
                 room.last_level_db = peak_dbfs(wav)
                 if room.last_level_db < SILENT_DBFS:
+                    room.known_key, room.known_until = None, 0.0  # the song ended
                     # Nothing audible: skip the request instead of spending quota on silence.
                     if not room._warned_silent:
                         log.warning("%s is silent (%.0f dBFS), skipping recognition -"
                                     " is its input %s correct?",
                                     room.name, room.last_level_db, room.describe())
                         room._warned_silent = True
+                elif time.monotonic() < room.known_until:
+                    # Still the song it matched twice: save the request.
+                    room._warned_silent = False
+                    room.skipped += 1
                 else:
                     room._warned_silent = False
-                    await self.match_bytes(wav, room=room)
+                    info = await self.match_bytes(wav, room=room)
                     room.last_error = None
+                    self._remember_song(room, info, cycle_start)
                 await self._clear_if_stopped()
             except asyncio.CancelledError:
                 raise
@@ -705,6 +740,15 @@ class Listener:
                 room.last_error = rooms.redact(str(e), room.url)[:300]
                 log.warning("%s: cycle failed: %s", room.name, room.last_error)
             await self._until_next_cycle(cycle_start)
+
+    def _remember_song(self, room, info, cycle_start):
+        isrc = info.get("isrc") if info else None
+        if config.SKIP_KNOWN_SECONDS > 0 and isrc and enrich.track_length(isrc) is None:
+            enrich.look_up_length(isrc, info["title"], info["album"])
+        known = known_for(room.known_key, info, enrich.track_length(isrc),
+                          time.monotonic() - cycle_start, config.SKIP_KNOWN_SECONDS)
+        room.known_key = info["track_key"] if info else None
+        room.known_until = time.monotonic() + known if known else 0.0
 
     async def _until_next_cycle(self, cycle_start):
         """Wait out MATCH_INTERVAL from the start of the cycle. A rate change

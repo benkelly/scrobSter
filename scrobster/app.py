@@ -264,6 +264,7 @@ def _room_public(row, user, mine) -> dict:
            "level_db": live.last_level_db if live else None,
            "live_db": live.live_level_db() if live else None,
            "attempts": live.attempts if live else 0,
+           "skipped": live.skipped if live else 0,
            "last_attempt": live.last_attempt if live else None}
     if user["is_admin"]:
         out.update(backend=row["backend"], device=row["device"],

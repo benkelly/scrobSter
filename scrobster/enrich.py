@@ -34,6 +34,7 @@ MAX_RECORDINGS = 3
 MUSICBRAINZ_LIMIT_SECONDS = 15
 
 _mbids = {}  # isrc -> ids found, {} when MusicBrainz has none
+_lengths = {}  # isrc -> seconds, for the recordings MusicBrainz knows the length of
 _covers_tried = set()  # (maloja url, artist, album or title), once per run
 _tasks = set()  # running cover uploads, kept so they are not collected mid-way
 _mb_lock = asyncio.Lock()
@@ -100,6 +101,10 @@ async def _lookup(isrc, title, album) -> dict:
         body = await _mb_get(s, f"isrc/{isrc}", inc="artist-credits") or {}
         recordings = recordings_to_try(body, title)
         ids = _ids(recordings[0], None) if recordings else {}
+        if recordings and recordings[0].get("length"):
+            if len(_lengths) >= CACHE_SIZE:
+                _lengths.pop(next(iter(_lengths)))
+            _lengths[isrc] = recordings[0]["length"] / 1000
         if album:
             for recording in recordings[:MAX_RECORDINGS]:
                 detail = await _mb_get(s, f"recording/{recording['id']}",
@@ -132,6 +137,21 @@ async def musicbrainz_ids(isrc, title, album) -> dict:
         _mbids.pop(next(iter(_mbids)))
     _mbids[isrc] = ids
     return ids
+
+
+def track_length(isrc) -> float | None:
+    """The track's length in seconds, if MusicBrainz said so already."""
+    return _lengths.get(isrc) if isrc else None
+
+
+def look_up_length(isrc, title, album):
+    """Ask MusicBrainz in the background, so the room that needs the length
+    does not wait for it. The answer is cached, see track_length()."""
+    if not isrc or isrc in _mbids:
+        return
+    task = asyncio.create_task(musicbrainz_ids(isrc, title, album))
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
 
 
 def is_placeholder(status: int, location: str | None) -> bool | None:

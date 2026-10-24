@@ -99,6 +99,15 @@ requests take turns: at most one per `RECOGNITION_GAP_SECONDS`, whatever the
 number of rooms. A silent room asks nothing. A 429 pauses every room, from one
 minute up to ten.
 
+**A known song is not asked about again.** Once a room matches the same song
+twice in a row, it stops asking Shazam until that song should end, and for at
+most `SKIP_KNOWN_SECONDS`, 60 by default. The length comes from MusicBrainz,
+through the ISRC that Shazam returns, and the room asks again a few seconds
+before the end, so the next song is caught as it starts. A song changed half-way
+is noticed within `SKIP_KNOWN_SECONDS`. Silence makes the room forget the song
+at once. While music plays this saves most requests, so more rooms fit within
+the rate limit. Set `SKIP_KNOWN_SECONDS=0` to ask every cycle.
+
 An administrator tunes both rates under **Recognition** on the Rooms tab, and a
 change applies at once. The card counts the requests of the last ten minutes,
 says when Shazam last limited them, and warns when the rooms that are on would
@@ -181,6 +190,7 @@ A service is enabled when all of its variables are set.
 | `CHUNK_SECONDS` | `12` | recorded seconds per match attempt; values above 14 are capped |
 | `MATCH_INTERVAL` | `15` | minimum seconds per cycle in each room, 12 to 600; increase if rate-limited. The Rooms tab can change it |
 | `RECOGNITION_GAP_SECONDS` | `4` | minimum seconds between two Shazam requests, across every room and browser clip, 1 to 60. The Rooms tab can change it |
+| `SKIP_KNOWN_SECONDS` | `60` | while a room hears a song it matched twice, skip Shazam for up to this long, or until the song should end. `0` asks every cycle |
 | `RESCROBBLE_MINUTES` | `30` | fallback cooldown, used only when a match has no offset |
 | `NOW_PLAYING_STOP_SECONDS` | `180` | clear the playing-now mark after this long with no match |
 | `DB_PATH` | `scrobster.db` | SQLite history file |
@@ -433,7 +443,7 @@ through Home Assistant ingress.
 | Endpoint | Purpose |
 |---|---|
 | `POST /api/login` `{username, password}` | sign in, sets a session cookie |
-| `GET /api/status` | version, listening state, last match, profile links, and `rooms`: each room's state, level and last match. `level_db` and `last_error` describe the first room. `mqtt` says whether the broker is connected |
+| `GET /api/status` | version, listening state, last match, profile links, and `rooms`: each room's state, level and last match, and `skipped`, the cycles that did not ask Shazam because the song was known. `level_db` and `last_error` describe the first room. `mqtt` says whether the broker is connected |
 | `GET /api/events` | what happens, as it happens, as [server-sent events](https://developer.mozilla.org/docs/Web/API/Server-sent_events). Each event is named by its kind: `match`, `scrobble`, `cleared`, `listening`, `rooms`, `member`, `users`, `services`, `rates`. You see what the rest of the API would show you. `resync` means events were lost, so read `/api/status` again |
 | `GET /api/levels` | `{room_id: dBFS}`: the live peak of each room that is listening, or `null` between two recordings |
 | `POST /api/listen` `{"on": true}` | start or stop listening in every room that is turned on. Administrator only |
