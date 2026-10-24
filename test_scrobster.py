@@ -208,6 +208,8 @@ def main():
     check_enrich()
     check_rooms()
     check_rates()
+    check_events()
+    check_mqtt()
     print("ok")
 
 
@@ -951,6 +953,209 @@ def check_rates():
         assert abs(house.last_rate_limited - time.time()) < 5
     finally:
         config.set_rates(gap=gap)
+
+
+
+def check_events():
+    """A subscriber reads what happened at its own pace, and a slow one is told
+    what it lost instead of holding everybody up."""
+    import asyncio
+    from scrobster import events
+
+    with events.subscribe(size=3) as sub:
+        events.emit("rooms")
+        events.emit("member", room_id=1, user_id=2, on=True)
+        got = sub.drain()
+        assert [e["kind"] for e in got] == ["rooms", "member"], got
+        assert got[1]["on"] is True and sub.drain() == []
+        for _ in range(5):
+            events.emit("rates")
+        assert len(sub.drain()) == 3 and sub.dropped == 2, "the oldest are dropped"
+
+        async def later():
+            asyncio.get_running_loop().call_later(0.05, events.emit, "users")
+            return await sub.wait(5)
+        assert [e["kind"] for e in asyncio.run(later())] == ["users"], "wait wakes on emit"
+        assert asyncio.run(sub.wait(0.01)) == [], "a timeout returns nothing"
+    events.emit("rooms")
+    assert sub.drain() == [], "a closed subscription receives nothing"
+
+
+def check_mqtt():
+    """Home Assistant devices: one per room and per user, removed when the room
+    or user goes, even while scrobSter was away, and commands act like the API."""
+    import asyncio
+    import types
+    from scrobster import accounts, config, db, events, listener as listener_mod
+    from scrobster import mqtt, rooms
+
+    topics = mqtt.Topics("scrobster", "homeassistant", "abc123")
+    assert topics.owns("scrobster_abc123") and topics.owns("scrobster_abc123_room_4")
+    assert not topics.owns("scrobster_abc1234_room_4"), "another install"
+    assert topics.states_of("scrobster_abc123_room_4") == [
+        "scrobster/abc123/room/4/state", "scrobster/abc123/room/4/cover"]
+    assert topics.states_of("scrobster_abc123_user_2") == ["scrobster/abc123/user/2/state"]
+    assert topics.states_of("scrobster_abc123") == ["scrobster/abc123/state"]
+    payload = {"components": {"a": {"platform": "sensor", "name": "A"}}}
+    removed = mqtt.with_removals(payload, {"a": "sensor", "b": "switch"})
+    assert removed["components"]["b"] == {"platform": "switch"}, "gone, platform only"
+    assert mqtt.with_removals(payload, {"a": "sensor"}) is payload
+
+    # A command off the broker is checked like a request to the API.
+    assert not asyncio.run(mqtt.handle_command(None, topics, "scrobster/abc123/gap/set", "0.1"))
+    assert not asyncio.run(mqtt.handle_command(None, topics, "scrobster/abc123/gap/set", "x"))
+    assert not asyncio.run(mqtt.handle_command(None, topics, "scrobster/abc123/what/set", "1"))
+
+    class Client:
+        """Enough of aiomqtt.Client, with a broker that keeps retained messages."""
+        def __init__(self, retained):
+            self.inbox = asyncio.Queue()
+            for topic, body in retained.items():
+                self.inbox.put_nowait(self._message(topic, body))
+            self.published = []
+
+        @staticmethod
+        def _message(topic, body):
+            return types.SimpleNamespace(topic=types.SimpleNamespace(value=topic),
+                                         payload=body.encode())
+
+        async def subscribe(self, *args, **kwargs):
+            pass
+
+        async def unsubscribe(self, *args, **kwargs):
+            pass
+
+        async def publish(self, topic, payload, qos=0, retain=False):
+            self.published.append((topic, payload, retain))
+
+        def last(self, topic):
+            found = [p for t, p, _ in self.published if t == topic]
+            return found[-1] if found else None
+
+        @property
+        def messages(self):
+            async def read():
+                while True:
+                    yield await self.inbox.get()
+            return read()
+
+    async def until(test, what):
+        for _ in range(200):
+            if test():
+                return
+            await asyncio.sleep(0.01)
+        raise AssertionError(f"timed out: {what}")
+
+    with tempfile.TemporaryDirectory() as d:
+        saved = (config.DB_PATH, mqtt.TICK_SECONDS, mqtt.RETAINED_WAIT_SECONDS,
+                 config.RECOGNITION_GAP_SECONDS)
+        config.DB_PATH = os.path.join(d, "mqtt.db")
+        mqtt.TICK_SECONDS = mqtt.RETAINED_WAIT_SECONDS = 0.05
+        try:
+            db.init()
+            admin = accounts.create_user("admin", "password123", is_admin=True)
+            sam = accounts.create_user("sam", "password123")
+            mic = rooms.list_rooms()[0]
+            iid = mqtt.instance_id()
+            assert mqtt.instance_id() == iid, "kept, so entities keep their history"
+            topics = mqtt.Topics("scrobster", "homeassistant", iid)
+            gone = topics.device_id("room", 99)
+            elsewhere = "scrobster_ffffff_room_1"
+            client = Client({
+                topics.config(gone): json.dumps({"components": {
+                    "level": {"platform": "sensor"}}}),
+                topics.config(topics.device_id("user", admin["id"])): json.dumps({
+                    "components": {"room_42": {"platform": "switch", "name": "x"}}}),
+                topics.config(elsewhere): json.dumps({"components": {}}),
+            })
+
+            async def scenario():
+                house = listener_mod.Listener()
+                await house.sync_rooms()
+                with events.subscribe() as sub:
+                    session = mqtt._Session(house, client, topics, sub)
+                    task = asyncio.create_task(session.run())
+                    await until(lambda: client.last(topics.status) == "online", "online")
+
+                    # Left behind while away: removed with its state.
+                    assert client.last(topics.config(gone)) == ""
+                    assert client.last(topics.room(99)) == "" == client.last(topics.room_cover(99))
+                    assert client.last(topics.config(elsewhere)) is None, "not ours"
+                    user_config = json.loads(client.last(
+                        topics.config(topics.device_id("user", admin["id"]))))
+                    assert user_config["components"]["room_42"] == {"platform": "switch"}
+                    switch = user_config["components"][f"room_{mic['id']}"]
+                    assert switch["command_topic"] == \
+                        f"{topics.root}/user/{admin['id']}/room/{mic['id']}/set"
+                    hub = json.loads(client.last(topics.config(topics.device_id())))
+                    assert hub["components"]["listening"]["state_topic"] == topics.hub
+                    room_config = json.loads(client.last(
+                        topics.config(topics.device_id("room", mic["id"]))))
+                    assert room_config["device"]["suggested_area"] == mic["name"]
+                    assert "url" not in json.dumps(room_config["components"]["enabled"])
+                    state = json.loads(client.last(topics.room(mic["id"])))
+                    assert state["now_playing"] == "idle" and not state["playing"]
+                    assert client.last(topics.room_cover(mic["id"])) is None, "no cover yet"
+
+                    # Commands act at once, and the new state follows.
+                    client.inbox.put_nowait(Client._message(
+                        f"{topics.root}/user/{sam['id']}/room/{mic['id']}/set", "ON"))
+                    await until(lambda: rooms.rooms_of(sam["id"]) == [mic["id"]], "member")
+                    await until(lambda: json.loads(client.last(topics.user(sam["id"])))
+                                ["rooms"] == [mic["id"]], "user state")
+                    client.inbox.put_nowait(Client._message(f"{topics.root}/gap/set", "7"))
+                    await until(lambda: config.RECOGNITION_GAP_SECONDS == 7, "rate")
+                    await until(lambda: json.loads(client.last(topics.hub))["gap"] == 7, "hub")
+
+                    # A match fires the room's event and shows as playing.
+                    info = {"artist": "A", "title": "Song", "album": "Al", "art_url": "u",
+                            "offset": 10, "isrc": None, "track_key": "k"}
+                    await house._on_match(info, "server", [sam], house.rooms[mic["id"]])
+                    await until(lambda: client.last(topics.room_event(mic["id"])), "event")
+                    fired = json.loads(client.last(topics.room_event(mic["id"])))
+                    assert fired["event_type"] == "match" and fired["users"] == ["sam"]
+                    state = json.loads(client.last(topics.room(mic["id"])))
+                    assert state["now_playing"] == "A - Song" and state["playing"]
+                    assert client.last(topics.room_cover(mic["id"])) == "u"
+
+                    # The same song on the next cycle is not a new event.
+                    fired_before = sum(t == topics.room_event(mic["id"])
+                                       for t, _, _ in client.published)
+                    await house._on_match(info, "server", [sam], house.rooms[mic["id"]])
+                    await asyncio.sleep(0.15)
+                    assert sum(t == topics.room_event(mic["id"]) for t, _, _
+                               in client.published) == fired_before, "one event per song"
+                    assert session.starts_song(mic["id"], {"track_key": "k2", "ts": 1}), \
+                        "another song is"
+                    assert session.starts_song(mic["id"], {
+                        "track_key": "k2", "ts": 1 + config.NOW_PLAYING_STOP_SECONDS}), \
+                        "and so is the same song after a silence"
+
+                    # A deleted room leaves Home Assistant, and its switches go.
+                    other = rooms.add_room(name="Hall", kind="device")
+                    await house.sync_rooms()
+                    hall = topics.device_id("room", other["id"])
+                    await until(lambda: client.last(topics.config(hall)), "new room")
+                    rooms.delete_room(other["id"])
+                    await house.sync_rooms()
+                    await until(lambda: client.last(topics.config(hall)) == "", "removed")
+                    user_config = json.loads(client.last(
+                        topics.config(topics.device_id("user", sam["id"]))))
+                    assert user_config["components"][f"room_{other['id']}"] == \
+                        {"platform": "switch"}
+
+                    published = len(client.published)
+                    await asyncio.sleep(0.2)
+                    assert len(client.published) == published, "nothing changed, nothing sent"
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+            asyncio.run(scenario())
+        finally:
+            (config.DB_PATH, mqtt.TICK_SECONDS, mqtt.RETAINED_WAIT_SECONDS) = saved[:3]
+            config.set_rates(gap=saved[3])
 
 
 if __name__ == "__main__":

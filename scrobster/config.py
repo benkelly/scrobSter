@@ -126,3 +126,17 @@ LISTENBRAINZ_URL = os.environ.get("LISTENBRAINZ_URL", "https://api.listenbrainz.
 
 MALOJA_URL = os.environ.get("MALOJA_URL")  # e.g. http://maloja:42010
 MALOJA_KEY = os.environ.get("MALOJA_KEY")
+
+# Home Assistant devices over MQTT discovery, see mqtt.py. "auto" connects to the
+# broker named here, or else to the one the Home Assistant Supervisor offers an
+# add-on. "0" turns it off.
+MQTT_ENABLED = os.environ.get("MQTT_ENABLED", "auto").lower()
+MQTT_HOST = os.environ.get("MQTT_HOST")
+MQTT_PORT = int(os.environ.get("MQTT_PORT", "1883"))
+MQTT_USERNAME = os.environ.get("MQTT_USERNAME")
+MQTT_PASSWORD = os.environ.get("MQTT_PASSWORD")
+MQTT_TLS = os.environ.get("MQTT_TLS", "0").lower() in ("1", "true", "yes")
+MQTT_TOPIC = os.environ.get("MQTT_TOPIC", "scrobster").strip("/")
+MQTT_DISCOVERY_PREFIX = os.environ.get("MQTT_DISCOVERY_PREFIX", "homeassistant").strip("/")
+# Set by the Supervisor in every add-on. It lets the add-on ask for the broker.
+SUPERVISOR_TOKEN = os.environ.get("SUPERVISOR_TOKEN")

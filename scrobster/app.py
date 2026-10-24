@@ -16,7 +16,7 @@ import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 
-from . import accounts, config, db, rooms, scrobble
+from . import accounts, config, db, mqtt, rooms, scrobble
 from . import __version__
 from .listener import (REQUEST_WINDOW_SECONDS, SILENT_DBFS, Listener, RateLimited,
                        decode_to_wav, list_devices, peak_dbfs, probe_level)
@@ -27,6 +27,7 @@ COOKIE = "scrobster_session"
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("scrobster")
 listener = Listener()
+publisher = mqtt.Publisher(listener)
 
 
 @contextlib.asynccontextmanager
@@ -43,7 +44,11 @@ async def _lifespan(app):
     await listener.sync_rooms()
     if config.LISTEN_ON_START:
         listener.start()
+    publishing = asyncio.create_task(publisher.run())
     yield
+    publishing.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await publishing
     await listener.stop()
 
 
@@ -289,6 +294,7 @@ async def status(user: dict = Depends(require_user)):
         "interval": config.MATCH_INTERVAL,
         "stop_seconds": config.NOW_PLAYING_STOP_SECONDS,
         "rate_limited_for": round(listener.rate_limited_for()),
+        "mqtt": publisher.connected,
         "rooms": room_list,
     }
 
@@ -442,10 +448,7 @@ async def set_recognition(body: dict, admin: dict = Depends(require_admin)):
         if not low <= value <= high:
             raise HTTPException(400, f"{name} must be between {low} and {high} seconds")
         chosen[name] = value
-    for name, value in chosen.items():
-        db.set_setting(_RATES[name][0], value)
-    config.set_rates(chosen.get("gap"), chosen.get("interval"))
-    listener.rates_changed()
+    listener.save_rates(chosen.get("gap"), chosen.get("interval"))
     log.info("recognition rates changed by %s: %s s between requests, %s s per room",
              admin["username"], config.RECOGNITION_GAP_SECONDS, config.MATCH_INTERVAL)
     return _rates_state()
@@ -454,10 +457,7 @@ async def set_recognition(body: dict, admin: dict = Depends(require_admin)):
 @app.delete("/api/recognition")
 async def reset_recognition(admin: dict = Depends(require_admin)):
     """Forget the rates chosen here and go back to the environment."""
-    for key, _, _ in _RATES.values():
-        db.set_setting(key, None)
-    config.set_rates(config.ENV_RECOGNITION_GAP_SECONDS, config.ENV_MATCH_INTERVAL)
-    listener.rates_changed()
+    listener.reset_rates()
     return _rates_state()
 
 

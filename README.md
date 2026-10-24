@@ -190,6 +190,12 @@ A service is enabled when all of its variables are set.
 | `API_TOKEN` | unset | optional shared token that acts as the owner. Each user also has a personal token |
 | `LISTEN_ON_START` | `1` | start listening in every room that is turned on at boot |
 | `LASTFM_API_KEY` `LASTFM_API_SECRET` | unset | identifies this application to Last.fm, for every user. Create a key at https://www.last.fm/api/account/create |
+| `MQTT_ENABLED` | `auto` | Home Assistant devices over MQTT. `auto` connects when `MQTT_HOST` is set or the Supervisor offers a broker. `0` turns it off. See Home Assistant |
+| `MQTT_HOST` `MQTT_PORT` | unset, `1883` | the broker |
+| `MQTT_USERNAME` `MQTT_PASSWORD` | unset | its credentials |
+| `MQTT_TLS` | `0` | connect with TLS |
+| `MQTT_TOPIC` | `scrobster` | where states and commands go, under `<topic>/<instance>/` |
+| `MQTT_DISCOVERY_PREFIX` | `homeassistant` | Home Assistant's discovery prefix |
 
 These seed the first account only. After that, each user manages their own under
 Settings.
@@ -365,6 +371,54 @@ The app also reads `/data/options.json` directly, which is where the Supervisor
 writes add-on options. Each key matches an environment variable, in either case.
 No wrapper script is needed.
 
+### Devices over MQTT
+
+scrobSter publishes its rooms and users to Home Assistant through MQTT
+discovery, so they appear as devices with no YAML. The add-on finds the
+Mosquitto broker by itself. Anywhere else, set `MQTT_HOST`, and the credentials
+if the broker needs them.
+
+| Device | Entities |
+|---|---|
+| **scrobSter** | Listening switch, Shazam rate limit, Shazam requests in the last ten minutes, and the two recognition rates as numbers |
+| **One per room**, in the Home Assistant area of the same name | Now playing (`Artist - Title`, or `idle`), with the track as attributes; Cover art; Music; Input level in dBFS; Recording; Last error; a Listen here switch; and a Match event |
+| **One per user** | Last scrobble, with the track as attributes; Scrobbles today; Services; and a Scrobble switch for every room |
+
+Everything is pushed when it changes, so Home Assistant polls nothing. Rooms and
+users appear and disappear as they are added and removed, also when that
+happened while scrobSter was not connected. When scrobSter stops, its entities
+show as unavailable.
+
+The Match event fires when a room starts hearing a song: a new track, or the
+same one after `NOW_PLAYING_STOP_SECONDS` of quiet. It carries the artist,
+title, album, cover, and the users who received it, so an automation can react
+to a song:
+
+```yaml
+automation:
+  - alias: Dim the kitchen for Daft Punk
+    triggers:
+      - trigger: state
+        entity_id: event.scrobster_kitchen_match
+    conditions:
+      - condition: template
+        value_template: "{{ trigger.to_state.attributes.artist == 'Daft Punk' }}"
+    actions:
+      - action: light.turn_on
+        target: {entity_id: light.kitchen}
+        data: {brightness_pct: 30}
+```
+
+**The broker is the gate for commands.** Its switches and numbers act like an
+administrator: whoever can publish to the broker can start and stop listening,
+change the rates, and choose rooms for any user. Keep the broker private, as
+the Mosquitto add-on is. Camera URLs and service credentials are never
+published.
+
+Each install has its own instance id, kept in the database, so two installs can
+share one broker. Inside scrobSter, every change goes through one event stream
+(`scrobster/events.py`), and MQTT is one reader of it.
+
 ## API
 
 Every route needs a signed-in session, a personal API token, or a request
@@ -373,7 +427,7 @@ through Home Assistant ingress.
 | Endpoint | Purpose |
 |---|---|
 | `POST /api/login` `{username, password}` | sign in, sets a session cookie |
-| `GET /api/status` | version, listening state, last match, profile links, and `rooms`: each room's state, level and last match. `level_db` and `last_error` describe the first room |
+| `GET /api/status` | version, listening state, last match, profile links, and `rooms`: each room's state, level and last match. `level_db` and `last_error` describe the first room. `mqtt` says whether the broker is connected |
 | `GET /api/levels` | `{room_id: dBFS}`: the live peak of each room that is listening, or `null` between two recordings |
 | `POST /api/listen` `{"on": true}` | start or stop listening in every room that is turned on. Administrator only |
 | `POST /api/match` (raw audio body) | identify one clip and scrobble it for the caller |
@@ -388,7 +442,7 @@ through Home Assistant ingress.
 | `POST /api/audio/test` `{kind, device, backend, url, room_id}` | record three seconds and report the peak level. Administrator only |
 | `GET/POST/DELETE /api/users` | accounts. Administrator only |
 
-Home Assistant REST sensor. Copy the token from Settings:
+Home Assistant REST sensor, if you do not use MQTT. Copy the token from Settings:
 
 ```yaml
 sensor:
