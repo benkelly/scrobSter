@@ -210,6 +210,7 @@ def main():
     check_rates()
     check_events()
     check_mqtt()
+    check_event_stream()
     print("ok")
 
 
@@ -1156,6 +1157,37 @@ def check_mqtt():
         finally:
             (config.DB_PATH, mqtt.TICK_SECONDS, mqtt.RETAINED_WAIT_SECONDS) = saved[:3]
             config.set_rates(gap=saved[3])
+
+
+
+def check_event_stream():
+    """/api/events shows each user what the rest of the API would show them."""
+    from scrobster.app import _sse, visible_event
+
+    admin, sam = {"id": 1, "is_admin": 1}, {"id": 2, "is_admin": 0}
+    match = {"artist": "A", "title": "T"}
+    room = {"kind": "match", "ts": 1, "room_id": 3, "users": [1], "match": match}
+    assert visible_event(room, sam) == {"kind": "match", "ts": 1, "room_id": 3,
+                                        "match": match, "mine": False}, "a room is everybody's"
+    assert visible_event(room, admin)["users"] == [1] and visible_event(room, admin)["mine"]
+    clip = {**room, "room_id": None}
+    assert visible_event(clip, sam) is None, "a browser clip is its owner's"
+    assert visible_event(clip, admin)["mine"]
+    scrobbled = {"kind": "scrobble", "ts": 1, "user_id": 1, "match_id": 9,
+                 "results": {"listenbrainz": "ok"}}
+    assert visible_event(scrobbled, sam) is None and visible_event(scrobbled, admin)["match_id"] == 9
+    assert visible_event({"kind": "services", "ts": 1, "user_id": 1}, sam) is None
+    assert visible_event({"kind": "cleared", "ts": 1, "users": [1]}, sam) is None
+    assert "users" not in visible_event({"kind": "cleared", "ts": 1, "users": [1, 2]}, sam)
+    member = {"kind": "member", "ts": 1, "room_id": 3, "user_id": 1, "on": True}
+    assert visible_event(member, sam) is None and visible_event(member, admin)["on"]
+    assert visible_event({**member, "user_id": 2}, sam)["room_id"] == 3
+    assert visible_event({"kind": "users", "ts": 1}, sam) is None
+    assert visible_event({"kind": "users", "ts": 1}, admin) is not None
+    assert visible_event({"kind": "listening", "ts": 1, "on": False}, sam)["on"] is False
+    assert visible_event({"kind": "rooms", "ts": 1}, sam) is not None
+    assert visible_event({"kind": "something new", "ts": 1}, admin) is None, "unknown stays out"
+    assert _sse("rooms", {"a": 1}) == 'event: rooms\ndata: {"a":1}\n\n'
 
 
 if __name__ == "__main__":

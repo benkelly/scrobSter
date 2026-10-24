@@ -7,6 +7,7 @@ again.
 """
 import asyncio
 import contextlib
+import json
 import logging
 import pathlib
 import secrets
@@ -14,14 +15,16 @@ import secrets
 import pylast
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
-from . import accounts, config, db, mqtt, rooms, scrobble
+from . import accounts, config, db, events, mqtt, rooms, scrobble
 from . import __version__
 from .listener import (REQUEST_WINDOW_SECONDS, SILENT_DBFS, Listener, RateLimited,
                        decode_to_wav, list_devices, peak_dbfs, probe_level)
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+# /api/events sends a comment this often, so proxies keep the stream open.
+EVENTS_KEEPALIVE_SECONDS = 15
 COOKIE = "scrobster_session"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -297,6 +300,73 @@ async def status(user: dict = Depends(require_user)):
         "mqtt": publisher.connected,
         "rooms": room_list,
     }
+
+
+def visible_event(event: dict, user: dict) -> dict | None:
+    """What one signed-in user may see of an event, or None.
+
+    The same rules as the rest of the API: a room is everybody's, a browser
+    clip, a scrobble and service credentials are their owner's, and the list
+    of accounts is for an administrator.
+    """
+    kind, admin, me = event["kind"], bool(user["is_admin"]), user["id"]
+    out = {"kind": kind, "ts": event["ts"]}
+    if kind == "match":
+        mine = me in event["users"]
+        if event["room_id"] is None and not mine:
+            return None
+        out.update(room_id=event["room_id"], match=event["match"], mine=mine)
+        if admin:
+            out["users"] = event["users"]
+    elif kind in ("scrobble", "services"):
+        if event["user_id"] != me:
+            return None
+        out.update({k: v for k, v in event.items() if k not in ("kind", "ts", "user_id")})
+    elif kind == "cleared":
+        if me not in event["users"]:
+            return None
+    elif kind == "member":
+        if event["user_id"] != me and not admin:
+            return None
+        out.update(room_id=event["room_id"], user_id=event["user_id"], on=event["on"])
+    elif kind == "users":
+        if not admin:
+            return None
+    elif kind == "listening":
+        out["on"] = event["on"]
+    elif kind not in ("rooms", "rates"):
+        return None
+    return out
+
+
+def _sse(kind, data) -> str:
+    return f"event: {kind}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n"
+
+
+@app.get("/api/events")
+async def event_stream(request: Request, user: dict = Depends(require_user)):
+    """What happens, as it happens, as server-sent events. Each event is named
+    by its kind, see events.py. `resync` means some were lost, so read
+    /api/status again."""
+    async def stream():
+        with events.subscribe() as sub:
+            yield _sse("hello", {"version": __version__, "user_id": user["id"]})
+            while not await request.is_disconnected():
+                happened = await sub.wait(EVENTS_KEEPALIVE_SECONDS)
+                if sub.dropped:
+                    sub.dropped = 0
+                    yield _sse("resync", {})
+                    continue
+                if not happened:
+                    yield ": keepalive\n\n"
+                for event in happened:
+                    shown = visible_event(event, user)
+                    if shown is not None:
+                        yield _sse(shown["kind"], shown)
+    # No buffering on the way, Home Assistant ingress and nginx included.
+    return StreamingResponse(stream(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache",
+                                      "X-Accel-Buffering": "no"})
 
 
 @app.get("/api/levels")
