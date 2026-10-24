@@ -2,7 +2,7 @@
 # all, a rebuild must not pull a new shazamio (an unofficial Shazam client) that
 # breaks matching. Dependabot proposes the bumps as pull requests, and CI tests
 # each one before it merges. Tested on Python 3.12, the Dockerfile's version.
-fastapi==0.143.3
+fastapi==0.156.8
 uvicorn==0.54.0
 shazamio==0.8.1
 pylast==7.2.0
