@@ -211,6 +211,7 @@ def main():
     check_events()
     check_mqtt()
     check_event_stream()
+    check_restart()
     print("ok")
 
 
@@ -1188,6 +1189,66 @@ def check_event_stream():
     assert visible_event({"kind": "rooms", "ts": 1}, sam) is not None
     assert visible_event({"kind": "something new", "ts": 1}, admin) is None, "unknown stays out"
     assert _sse("rooms", {"a": 1}) == 'event: rooms\ndata: {"a":1}\n\n'
+
+
+
+def check_restart():
+    """A restart keeps what was scrobbled, so a song still playing is not
+    scrobbled twice, and the add-on finds a broker installed after it started."""
+    import asyncio
+    from scrobster import accounts, config, db, listener as listener_mod, mqtt
+
+    with tempfile.TemporaryDirectory() as d:
+        saved = config.DB_PATH
+        config.DB_PATH = os.path.join(d, "restart.db")
+        try:
+            db.init()
+            sam = accounts.create_user("sam", "password123")
+            now = int(time.time())
+            keep_s = listener_mod.play_memory_seconds(config.RESCROBBLE_MINUTES * 60)
+            db.save_play(sam["id"], "old", now - keep_s - 10, 5, now - keep_s - 60)
+            db.save_play(sam["id"], "song", now - 60, 30.0, now - keep_s)
+            db.save_play(sam["id"], "song", now - 50, 40.0, now - keep_s)
+
+            house = listener_mod.Listener()
+            house.restore_plays()
+            assert house._last_plays == {(sam["id"], "song"): (now - 50, 40.0)}, \
+                house._last_plays
+            cooldown = config.RESCROBBLE_MINUTES * 60
+            assert not listener_mod.should_scrobble((sam["id"], "song"), now, 90,
+                                                    house._last_plays, cooldown), \
+                "the same play, after a restart, is not scrobbled again"
+            assert listener_mod.should_scrobble((sam["id"], "song"), now, 5,
+                                                house._last_plays, cooldown), "a repeat is"
+            accounts.delete_user(sam["id"])
+            assert db.load_plays(0) == {}, "a deleted user's plays go with them"
+        finally:
+            config.DB_PATH = saved
+
+    async def late_broker():
+        answers = [None, None, {"host": "core-mosquitto", "port": 1883}]
+
+        async def ask(warn=True):
+            return answers.pop(0)
+        previous = (mqtt.broker_settings, mqtt.BROKER_RETRY_SECONDS, config.SUPERVISOR_TOKEN)
+        mqtt.broker_settings, mqtt.BROKER_RETRY_SECONDS = ask, 0.01
+        config.SUPERVISOR_TOKEN = "token"
+        try:
+            return await mqtt.Publisher(None)._find_broker()
+        finally:
+            mqtt.broker_settings, mqtt.BROKER_RETRY_SECONDS, config.SUPERVISOR_TOKEN = previous
+    assert asyncio.run(late_broker())["host"] == "core-mosquitto"
+
+    async def no_supervisor():
+        async def ask(warn=True):
+            return None
+        previous = mqtt.broker_settings, config.SUPERVISOR_TOKEN
+        mqtt.broker_settings, config.SUPERVISOR_TOKEN = ask, None
+        try:
+            return await asyncio.wait_for(mqtt.Publisher(None)._find_broker(), 1)
+        finally:
+            mqtt.broker_settings, config.SUPERVISOR_TOKEN = previous
+    assert asyncio.run(no_supervisor()) is None, "outside an add-on, give up at once"
 
 
 if __name__ == "__main__":

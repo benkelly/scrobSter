@@ -44,6 +44,7 @@ async def _lifespan(app):
     # Rates chosen on the Rooms tab outrank the environment, see /api/recognition.
     config.set_rates(db.get_setting("recognition_gap_seconds"),
                      db.get_setting("match_interval"))
+    listener.restore_plays()
     await listener.sync_rooms()
     if config.LISTEN_ON_START:
         listener.start()

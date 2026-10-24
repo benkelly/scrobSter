@@ -99,6 +99,15 @@ def _create_schema(c):
             room_id INTEGER NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             PRIMARY KEY (room_id, user_id));
+
+        -- The last scrobbled play of each track, per user, so a restart in the
+        -- middle of a song does not scrobble it again. See should_scrobble().
+        CREATE TABLE IF NOT EXISTS plays(
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            track_key TEXT NOT NULL,
+            ts INTEGER NOT NULL,
+            offset REAL,
+            PRIMARY KEY (user_id, track_key));
         """
     )
 
@@ -249,6 +258,24 @@ def recent(user_id, limit=50):
         if len(out) >= limit:
             break
     return out
+
+
+def save_play(user_id, track_key, ts, offset, forget_before):
+    """Keep a scrobbled play, and drop those older than forget_before."""
+    with _conn() as c:
+        c.execute("INSERT INTO plays(user_id, track_key, ts, offset) VALUES(?,?,?,?)"
+                  " ON CONFLICT(user_id, track_key) DO UPDATE"
+                  " SET ts=excluded.ts, offset=excluded.offset",
+                  (user_id, track_key, ts, offset))
+        c.execute("DELETE FROM plays WHERE ts < ?", (forget_before,))
+
+
+def load_plays(forget_before) -> dict:
+    """{(user_id, track_key): (ts, offset)} of the plays still worth knowing."""
+    with _conn() as c:
+        c.execute("DELETE FROM plays WHERE ts < ?", (forget_before,))
+        return {(r["user_id"], r["track_key"]): (r["ts"], r["offset"])
+                for r in c.execute("SELECT * FROM plays").fetchall()}
 
 
 def scrobbled_since(user_id, ts) -> int:
