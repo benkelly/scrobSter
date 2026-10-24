@@ -115,9 +115,24 @@ def _pylast_network(service, data):
     return cached[1]
 
 
+def scrobble_params(artist, title, album, ts) -> dict:
+    """One scrobble in the plain form, not the indexed batch form
+    (`artist[0]`) that pylast sends. Libre.fm answers the batch form with
+    "Invalid parameters", while its now-playing call, which pylast sends plain,
+    works."""
+    params = {"artist": artist, "track": title, "timestamp": str(ts)}
+    if album:
+        params["album"] = album
+    return params
+
+
 def _pylast_scrobble(service, data, artist, title, album, ts):
-    _pylast_network(service, data).scrobble(
-        artist=artist, title=title, album=album, timestamp=ts)
+    network = _pylast_network(service, data)
+    if service == "librefm":
+        pylast._Request(network, "track.scrobble",
+                        scrobble_params(artist, title, album, ts)).execute()
+        return
+    network.scrobble(artist=artist, title=title, album=album, timestamp=ts)
 
 
 def _pylast_now_playing(service, data, artist, title, album):
