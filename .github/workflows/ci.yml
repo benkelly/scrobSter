@@ -32,7 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
       - name: Lint and render the chart
         run: |
           set -euo pipefail
@@ -181,7 +181,7 @@ jobs:
           tags: scrobster:ci
           cache-from: type=gha
 
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
       # kind's default StorageClass provisions the PVC.
       - uses: helm/kind-action@v1
         with:
@@ -333,7 +333,7 @@ jobs:
       # The chart carries __version__ for both numbers. It is pushed when that
       # version is not published yet, so the first run after the chart was
       # added publishes it, and every release after that.
-      - uses: azure/setup-helm@v4
+      - uses: azure/setup-helm@v5
       - name: Publish the Helm chart
         env:
           VERSION: ${{ steps.version.outputs.version }}
