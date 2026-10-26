@@ -94,6 +94,12 @@ Tips for cameras:
 - **Audio stays on your network.** Each clip lives in a temporary file. Only
   the fingerprint, computed locally, goes to Shazam.
 
+**A camera that goes offline is logged once.** The first failure logs a
+warning with the reason, then the room retries quietly, more gently each time
+up to once a minute. The log gets a reminder every 15 minutes while it lasts,
+a line for each new reason, and one line when the room works again. Over MQTT
+the room's **Problem** sensor is on meanwhile, for an automation that tells you.
+
 **Shazam's rate limit is shared.** Every room asks from the same address, so
 requests take turns: at most one per `RECOGNITION_GAP_SECONDS`, whatever the
 number of rooms. A silent room asks nothing. A 429 pauses every room, from one
@@ -391,7 +397,7 @@ if the broker needs them.
 | Device | Entities |
 |---|---|
 | **scrobSter** | Listening switch, Shazam rate limit, Shazam requests in the last ten minutes, and the two recognition rates as numbers |
-| **One per room**, in the Home Assistant area of the same name | Now playing (`Artist - Title`, or `idle`), with the track as attributes; Cover art; Music; Input level in dBFS; Recording; Last error; a Listen here switch; and a Match event |
+| **One per room**, in the Home Assistant area of the same name | Now playing (`Artist - Title`, or `idle`), with the track as attributes; Cover art; Music; Input level in dBFS; Recording; Problem, on while the room keeps failing, with `failing_since` and the reason; Last error; a Listen here switch; and a Match event |
 | **One per user** | Last scrobble, with the track as attributes; Scrobbles today; Services; and a Scrobble switch for every room |
 
 Everything is pushed when it changes, so Home Assistant polls nothing. Rooms and
@@ -443,7 +449,7 @@ through Home Assistant ingress.
 | Endpoint | Purpose |
 |---|---|
 | `POST /api/login` `{username, password}` | sign in, sets a session cookie |
-| `GET /api/status` | version, listening state, last match, profile links, and `rooms`: each room's state, level and last match, and `skipped`, the cycles that did not ask Shazam because the song was known. `level_db` and `last_error` describe the first room. `mqtt` says whether the broker is connected |
+| `GET /api/status` | version, listening state, last match, profile links, and `rooms`: each room's state, level and last match, and `skipped`, the cycles that did not ask Shazam because the song was known, and `failing_since`, the unix time a room started failing, or `null`. `level_db` and `last_error` describe the first room. `mqtt` says whether the broker is connected |
 | `GET /api/events` | what happens, as it happens, as [server-sent events](https://developer.mozilla.org/docs/Web/API/Server-sent_events). Each event is named by its kind: `match`, `scrobble`, `cleared`, `listening`, `rooms`, `member`, `users`, `services`, `rates`. You see what the rest of the API would show you. `resync` means events were lost, so read `/api/status` again |
 | `GET /api/levels` | `{room_id: dBFS}`: the live peak of each room that is listening, or `null` between two recordings |
 | `POST /api/listen` `{"on": true}` | start or stop listening in every room that is turned on. Administrator only |

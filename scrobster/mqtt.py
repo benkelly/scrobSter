@@ -175,6 +175,11 @@ def snapshot(listener, users=None) -> dict:
             "enabled": room.enabled, "running": room.running,
             "level_db": None if room.last_level_db is None else round(room.last_level_db),
             "error": room.last_error, "playing": playing,
+            "problem": room.outage.since is not None,
+            "failing_since": (time.strftime("%Y-%m-%dT%H:%M:%S%z",
+                                            time.localtime(room.outage.since))
+                              if room.outage.since else None),
+            "failures": room.outage.tries,
             "now_playing": _line(match) if playing else "idle",
             "track": _track(match), "art_url": match.get("art_url") if match else None,
         })
@@ -301,6 +306,14 @@ def room_config(topics, room) -> dict:
         "running": {"platform": "binary_sensor", "name": "Recording",
                     "device_class": "running", "entity_category": "diagnostic",
                     "value_template": "{{ 'ON' if value_json.running else 'OFF' }}"},
+        "problem": {"platform": "binary_sensor", "name": "Problem",
+                    "device_class": "problem",
+                    "value_template": "{{ 'ON' if value_json.problem else 'OFF' }}",
+                    "json_attributes_topic": topics.room(room["id"]),
+                    "json_attributes_template": (
+                        "{{ {'failing_since': value_json.failing_since,"
+                        " 'failures': value_json.failures,"
+                        " 'reason': value_json.error} | tojson }}")},
         "error": {"platform": "sensor", "name": "Last error", "icon": "mdi:alert-circle",
                   "entity_category": "diagnostic",
                   "value_template": "{{ value_json.error or 'none' }}"},
