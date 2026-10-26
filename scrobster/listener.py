@@ -468,6 +468,65 @@ async def decode_to_wav(data: bytes) -> bytes:
         return wav
 
 
+# While a room keeps failing, remind the log this often that it still is.
+OUTAGE_REMINDER_SECONDS = 15 * 60
+# ...and wait longer between tries, doubling up to this, so a camera that is
+# rebooting is not asked every few seconds. A returning one is still found
+# within this long.
+OUTAGE_RETRY_MAX_SECONDS = 60
+
+
+def _minutes(seconds) -> str:
+    minutes = round(seconds / 60)
+    return f"{minutes} min" if minutes else f"{round(seconds)} s"
+
+
+class Outage:
+    """A room whose cycles keep failing, such as a camera that is offline.
+
+    The log gets one warning when it starts, a reminder every
+    OUTAGE_REMINDER_SECONDS, a line for each new reason, and one line when the
+    room works again, rather than a warning every cycle.
+    """
+
+    def __init__(self):
+        self.since = None  # unix time of the first failure
+        self.tries = 0
+        self._reminded = None
+        self._reasons = set()
+
+    def failed(self, reason, now) -> tuple[str, str] | None:
+        """(level, message) to log for this failure, or None to stay quiet."""
+        self.tries += 1
+        if self.since is None:
+            self.since = self._reminded = now
+            self._reasons = {reason}
+            return "warning", f"failing: {reason}. Retrying quietly; will log when it works again"
+        if reason not in self._reasons:
+            self._reasons.add(reason)
+            return "info", f"still failing, now: {reason}"
+        if now - self._reminded >= OUTAGE_REMINDER_SECONDS:
+            self._reminded = now
+            return "warning", (f"still failing after {_minutes(now - self.since)}"
+                               f" ({self.tries} tries)")
+        return None
+
+    def recovered(self, now) -> str | None:
+        """The message for the first success after failures, or None."""
+        if self.since is None:
+            return None
+        message = f"working again after {_minutes(now - self.since)}"
+        self.since, self.tries, self._reminded, self._reasons = None, 0, None, set()
+        return message
+
+    def retry_after(self, interval) -> float:
+        """Seconds from one try to the next: the usual interval at first,
+        then doubling, up to OUTAGE_RETRY_MAX_SECONDS."""
+        if self.tries <= 1:
+            return interval
+        return max(interval, min(interval * 2 ** (self.tries - 1), OUTAGE_RETRY_MAX_SECONDS))
+
+
 class Room:
     """One input, and what it last heard. Everybody signed in may see this."""
 
@@ -500,6 +559,7 @@ class Room:
 
     def reset_input(self):
         """Forget what the previous input reported, after it changed."""
+        self.outage = Outage()
         self.known_key = None
         self.known_until = 0.0
         self.last_level_db = None
@@ -730,6 +790,11 @@ class Listener:
                     room.last_error = None
                     self._remember_song(room, info, cycle_start)
                 await self._clear_if_stopped()
+                back = room.outage.recovered(int(time.time()))
+                if back:
+                    room.last_error = None
+                    log.info("%s: %s", room.name, back)
+                    events.emit("rooms")
             except asyncio.CancelledError:
                 raise
             except RateLimited as e:
@@ -738,7 +803,15 @@ class Listener:
                 continue
             except Exception as e:
                 room.last_error = rooms.redact(str(e), room.url)[:300]
-                log.warning("%s: cycle failed: %s", room.name, room.last_error)
+                said = room.outage.failed(room.last_error, int(time.time()))
+                if said:
+                    getattr(log, said[0])("%s: %s", room.name, said[1])
+                    events.emit("rooms")
+                else:
+                    log.debug("%s: cycle failed: %s", room.name, room.last_error)
+                await self._until_next_cycle(
+                    cycle_start, room.outage.retry_after(config.MATCH_INTERVAL))
+                continue
             await self._until_next_cycle(cycle_start)
 
     def _remember_song(self, room, info, cycle_start):
@@ -750,11 +823,12 @@ class Listener:
         room.known_key = info["track_key"] if info else None
         room.known_until = time.monotonic() + known if known else 0.0
 
-    async def _until_next_cycle(self, cycle_start):
-        """Wait out MATCH_INTERVAL from the start of the cycle. A rate change
-        wakes the wait, which then measures again against the new interval."""
+    async def _until_next_cycle(self, cycle_start, interval=None):
+        """Wait out MATCH_INTERVAL, or `interval`, from the start of the cycle.
+        A rate change wakes the wait, which then measures again against the new
+        interval."""
         while True:
-            left = config.MATCH_INTERVAL - (time.monotonic() - cycle_start)
+            left = (interval or config.MATCH_INTERVAL) - (time.monotonic() - cycle_start)
             if left <= 0:
                 return
             try:

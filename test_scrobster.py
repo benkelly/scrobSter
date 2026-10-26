@@ -214,6 +214,7 @@ def main():
     check_restart()
     check_known_song()
     check_librefm_scrobble()
+    check_outage()
     print("ok")
 
 
@@ -1360,6 +1361,91 @@ def check_librefm_scrobble():
         "artist": "A", "track": "T", "timestamp": "5", "album": "Al"})], sent
     assert not any("[" in key for _, _, p in sent for key in p), "no indexed keys"
     assert scrobbled == [{"artist": "A", "title": "T", "album": "Al", "timestamp": 5}]
+
+
+
+def check_outage():
+    """A room that keeps failing logs once, then a reminder every 15 minutes
+    and each new reason, then once when it works again, and retries more
+    gently in between."""
+    import asyncio
+    import logging
+    from scrobster import accounts, config, db, listener as listener_mod
+
+    out = listener_mod.Outage()
+    assert out.recovered(0) is None, "nothing to recover from"
+    assert out.retry_after(15) == 15
+    level, said = out.failed("No route to host", 1000)
+    assert level == "warning" and "No route to host" in said
+    assert out.failed("No route to host", 1015) is None, "the same failure is quiet"
+    assert out.retry_after(15) == 30 and out.failed("No route to host", 1045) is None
+    assert out.retry_after(15) == 60 and out.failed("No route to host", 1105) is None
+    assert out.retry_after(15) == 60, "never longer than a minute"
+    assert out.retry_after(120) == 120, "never shorter than the room's own interval"
+    assert out.failed("Connection refused", 1165)[0] == "info", "a new reason is told"
+    assert out.failed("No route to host", 1225) is None, "an old reason is not again"
+    level, said = out.failed("No route to host", 1000 + 15 * 60)
+    assert level == "warning" and "15 min" in said and "(7 tries)" in said, said
+    assert out.failed("No route to host", 1000 + 16 * 60) is None
+    assert out.recovered(1000 + 47 * 60) == "working again after 47 min"
+    assert out.since is None and out.tries == 0 and out.retry_after(15) == 15
+    assert out.failed("No route to host", 5000)[0] == "warning", "a new outage warns again"
+
+    lines = []
+
+    class Keep(logging.Handler):
+        def emit(self, record):
+            if record.levelno >= logging.INFO and "Master" in record.getMessage():
+                lines.append(record.getMessage())
+
+    async def scenario():
+        house = listener_mod.Listener()
+        await house.sync_rooms()
+        room = house.rooms[min(house.rooms)]
+        room.name = "Master"
+        script = ["fail"] * 6 + ["ok"] * 2
+        seen = []
+
+        async def capture(**kwargs):
+            await asyncio.sleep(0)
+            step = script.pop(0) if script else "ok"
+            if step == "fail":
+                raise RuntimeError("the stream failed: No route to host")
+            seen.append(room.outage.since)
+            return _wav(0)  # silent, so Shazam is never asked
+        saved = listener_mod.capture_chunk, config.MATCH_INTERVAL
+        listener_mod.capture_chunk, config.MATCH_INTERVAL = capture, 0
+        try:
+            task = asyncio.create_task(house._loop(room))
+            while script:
+                await asyncio.sleep(0.01)
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        finally:
+            listener_mod.capture_chunk, config.MATCH_INTERVAL = saved
+        return room, seen
+
+    handler = Keep()
+    logging.getLogger("scrobster").addHandler(handler)
+    with tempfile.TemporaryDirectory() as d:
+        saved = config.DB_PATH
+        config.DB_PATH = os.path.join(d, "outage.db")
+        try:
+            db.init()
+            accounts.create_user("admin", "password123", is_admin=True)
+            room, seen = asyncio.run(scenario())
+        finally:
+            config.DB_PATH = saved
+            logging.getLogger("scrobster").removeHandler(handler)
+    failing = [line for line in lines if "fail" in line]
+    assert len(failing) == 1 and "No route to host" in failing[0], lines
+    assert any("working again" in line for line in lines), lines
+    assert seen[0] is not None, "the first success still sees the outage"
+    assert room.outage.since is None and room.last_error is None
 
 
 if __name__ == "__main__":
