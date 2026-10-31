@@ -8,6 +8,9 @@ name, which the history shows, and one input:
 - **A camera or stream.** Give its URL: `rtsp://`, `rtsps://`, `http://` or
   `https://`. ffmpeg asks an RTSP camera for its audio only, over TCP, so the
   video is never sent.
+- **A browser in the room.** A tablet by the hi-fi records the clips and sends
+  them. It shows what plays, too. See
+  [A tablet as the room's microphone](#a-tablet-as-the-rooms-microphone).
 
 **Test level** records three seconds and reports the peak, before you save. A
 camera with its audio turned off says so.
@@ -167,6 +170,76 @@ An upgrade from 0.2 keeps working as before. The microphone becomes the first
 room, named "Server mic", with the device chosen in Settings. Everyone who
 received the microphone receives that room. Rename it after the room it is in
 with **Edit** on the Rooms tab.
+
+## A tablet as the room's microphone
+
+A room does not need a microphone on the server. A tablet, an old phone, or
+any browser by the hi-fi can be the room's screen and its microphone at once.
+
+1. On the Rooms tab, add a room that listens through **A browser in the room**.
+2. Press the room's **Display** button. Keep **Use this browser as the room's
+   microphone** ticked, and make the link.
+3. Open the link on the tablet, over HTTPS. Allow the microphone.
+
+The link looks like `/display?room=3&listen=1&token=...`. The tablet shows the
+cover of what plays, as any display does. A small line at the bottom left says
+that it listens, with a level bar.
+
+```mermaid
+flowchart LR
+  accTitle: A tablet that is a room's screen and its microphone
+  accDescr: Speakers play into the room. A tablet's browser hears them and asks the server's listen route whether to record. It records a clip and posts it to the room's clip route over HTTPS. The server goes the same way as for a server room, asks Shazam through the shared queue, and scrobbles for the room's members. The tablet reads the room's now and cover routes to show what plays.
+  spk(["Speakers"]) -.->|"sound in the room"| tab(["Tablet browser<br/>/display?listen=1"])
+  subgraph server["Server"]
+    listen["GET /api/rooms/{id}/listen"]
+    clip["POST /api/rooms/{id}/clip"]
+    room["scrobSter browser room<br/>silence, known song, Shazam queue"]
+    now["GET /api/rooms/{id}/now and cover"]
+  end
+  tab -->|"record now?"| listen
+  tab -->|"clips over HTTPS"| clip
+  clip --> room
+  room --> now
+  now -->|"what plays"| tab
+```
+
+A browser room is a real room. People turn on **scrobble for me** for it, the
+history says "via" its name, and it has its own Home Assistant device.
+
+Each clip goes the same way as a server room's capture:
+
+- A silent clip, or one below `QUIET_DBFS`, is not sent to Shazam. The song ends.
+- A song the room knows is not sent again, see `SKIP_KNOWN_SECONDS`.
+- Anything else waits its turn in the Shazam queue that every room shares.
+- A match scrobbles once per play for each member.
+
+Before each clip, the tablet asks the server whether it should record. The
+server says to wait while the room is turned off, while Shazam limits requests,
+or while the room hears a song it knows. So the tablet sends nothing it does
+not need to. It records one clip of `CHUNK_SECONDS` per `MATCH_INTERVAL`, as a
+server room does.
+
+When no clip arrives for two cycles, and at least 60 seconds, the room fails
+with "the browser stopped sending". The Rooms tab shows it, and so does the
+room's Problem sensor in Home Assistant. A page that waits as the server told
+it does not count as gone. The room works again with the next clip.
+
+The link's token is a room token. It reads this room and nothing else, and it
+sends audio to this room only. A plain display token cannot send audio.
+Removing the room revokes its room tokens. See [Security](../SECURITY.md).
+
+Tips:
+
+- **Use HTTPS.** Browsers allow the microphone only in a secure context. The
+  page says so when it is not. The [phone guide](guides/phone.md) shows ways
+  to get HTTPS.
+- **Keep the page open and in front.** It keeps the screen on where the
+  browser allows it. Plug the tablet in.
+- **Old tablets work.** Without MediaRecorder, as on iOS before 14.3 or an old
+  Android WebView, the page records through WebAudio and sends 16 kHz WAV.
+  Add `&wav=1` to try that path on a newer browser.
+- **Tap the screen** if the microphone was blocked, once you have allowed it in
+  the browser's settings. Safari may also need a tap before it records.
 
 ## Find your audio device
 

@@ -6,7 +6,9 @@ already signed the user in, and its documentation says an add-on must not ask
 again.
 
 A display token reads what the rooms play and nothing else, see
-require_viewer().
+require_viewer(). A room token, a display token for one browser room that may
+listen, also sends that room's clips, and reads that room only, see
+require_room_mic().
 """
 import asyncio
 import contextlib
@@ -23,7 +25,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 
 from . import accounts, config, db, display, events, mqtt, rooms, scrobble
 from . import __version__
-from .listener import (REQUEST_WINDOW_SECONDS, SILENT_DBFS, Listener, RateLimited,
+from .listener import (BROWSER_OFF_WAIT_SECONDS, REQUEST_WINDOW_SECONDS, SILENT_DBFS,
+                       Listener, RateLimited,
                        decode_to_wav, floor_dbfs, is_quiet, list_devices, peak_dbfs,
                        probe_level)
 
@@ -117,12 +120,45 @@ def require_viewer(request: Request) -> dict:
     user = current_user(request)
     if user:
         return {"user": user}
-    header = request.headers.get("authorization", "")
-    token = header[7:] if header.startswith("Bearer ") else request.query_params.get("token")
-    screen = accounts.display_by_token(token)
+    screen = _display_token(request)
     if screen:
         return {"display": screen}
     raise HTTPException(401, "sign in first, or use a display token")
+
+
+def _display_token(request: Request):
+    header = request.headers.get("authorization", "")
+    token = header[7:] if header.startswith("Bearer ") else request.query_params.get("token")
+    return accounts.display_by_token(token)
+
+
+def _scoped_room(viewer: dict):
+    """The one room a viewer may read, or None when it may read them all."""
+    screen = viewer.get("display")
+    return screen["room_id"] if screen else None
+
+
+def _may_read(viewer: dict, room_id: int):
+    scoped = _scoped_room(viewer)
+    if scoped is not None and scoped != room_id:
+        raise HTTPException(403, "this display link is for another room")
+
+
+def require_room_mic(room_id: int, request: Request) -> dict:
+    """Who may send a browser room's audio: that room's own token, or an
+    administrator. A plain display token reads, and never sends."""
+    user = current_user(request)
+    if user:
+        if not user["is_admin"]:
+            raise HTTPException(403, "only an administrator, or the room's own"
+                                     " microphone link, sends a room's audio")
+        return {"user": user}
+    screen = _display_token(request)
+    if screen is None:
+        raise HTTPException(401, "sign in first, or use the room's microphone link")
+    if not (screen["listen"] and screen["room_id"] == room_id):
+        raise HTTPException(403, "this display link may not send audio to this room")
+    return {"display": screen}
 
 
 def _public(user) -> dict:
@@ -369,11 +405,14 @@ def visible_event(event: dict, user: dict) -> dict | None:
     return out
 
 
-def display_event(event: dict) -> dict | None:
+def display_event(event: dict, room_id=None) -> dict | None:
     """What a display token may see of an event: that a room heard a song, or
-    that the rooms or listening changed. It then reads /api/rooms/{id}/now."""
+    that the rooms or listening changed. It then reads /api/rooms/{id}/now.
+    A token for one room, `room_id`, hears of that room's songs only."""
     kind = event["kind"]
     if kind == "match" and event["room_id"] is not None:
+        if room_id is not None and event["room_id"] != room_id:
+            return None
         return {"kind": kind, "ts": event["ts"], "room_id": event["room_id"]}
     if kind in ("rooms", "listening"):
         return {"kind": kind, "ts": event["ts"]}
@@ -390,9 +429,10 @@ async def event_stream(request: Request, viewer: dict = Depends(require_viewer))
     by its kind, see events.py. `resync` means some were lost, so read
     /api/status again. A display token sees only display_event()."""
     user = viewer.get("user")
+    scoped = _scoped_room(viewer)
 
     def visible(event):
-        return visible_event(event, user) if user else display_event(event)
+        return visible_event(event, user) if user else display_event(event, scoped)
 
     async def stream():
         with events.subscribe() as sub:
@@ -440,9 +480,7 @@ async def recent(limit: int = 50, user: dict = Depends(require_user)):
     return db.recent(user["id"], min(limit, 500))
 
 
-@app.post("/api/match")
-async def match(request: Request, user: dict = Depends(require_user)):
-    """Identify one clip recorded by a browser. It scrobbles for that user only."""
+async def _upload(request: Request) -> bytes:
     declared = request.headers.get("content-length", "")
     if declared.isdigit() and int(declared) > MAX_UPLOAD_BYTES:
         raise HTTPException(413, "audio too large")
@@ -451,6 +489,13 @@ async def match(request: Request, user: dict = Depends(require_user)):
         raise HTTPException(400, "empty body")
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(413, "audio too large")
+    return data
+
+
+@app.post("/api/match")
+async def match(request: Request, user: dict = Depends(require_user)):
+    """Identify one clip recorded by a browser. It scrobbles for that user only."""
+    data = await _upload(request)
     try:
         wav = await decode_to_wav(data)
     except ValueError as e:
@@ -552,14 +597,23 @@ def _nothing_playing() -> dict:
 @app.get("/api/rooms/{room_id}/now")
 async def room_now(room_id: int, viewer: dict = Depends(require_viewer)):
     """The song a room plays, for a display. Only while it plays."""
+    _may_read(viewer, room_id)
     return JSONResponse(display.now_playing(_live_room(room_id), time.time()),
                         headers=_NO_STORE)
 
 
+def _readable_rooms(viewer):
+    scoped = _scoped_room(viewer)
+    if scoped is None:
+        return listener.rooms.values()
+    return [listener.rooms[scoped]] if scoped in listener.rooms else []
+
+
 @app.get("/api/now")
 async def any_now(viewer: dict = Depends(require_viewer)):
-    """The same, for whichever room matched last of those that play."""
-    room = display.latest_room(listener.rooms.values(), time.time())
+    """The same, for whichever room matched last of those that play. A token
+    for one room only ever answers with that room."""
+    room = display.latest_room(_readable_rooms(viewer), time.time())
     return JSONResponse(display.now_playing(room, time.time()) if room
                         else _nothing_playing(), headers=_NO_STORE)
 
@@ -605,6 +659,7 @@ async def room_cover(request: Request, room_id: int, size: int | None = None,
     many pixels square, where the cover's host allows it. While nothing plays,
     or the song has no cover, `idle` chooses the answer: 204, 404, or `image`,
     a black square."""
+    _may_read(viewer, room_id)
     return await _cover_response(request, _live_room(room_id), size, idle)
 
 
@@ -612,8 +667,54 @@ async def room_cover(request: Request, room_id: int, size: int | None = None,
 async def any_cover(request: Request, size: int | None = None, idle: str = "204",
                     viewer: dict = Depends(require_viewer)):
     """The same, for the room /api/now picks."""
-    room = display.latest_room(listener.rooms.values(), time.time())
+    room = display.latest_room(_readable_rooms(viewer), time.time())
     return await _cover_response(request, room, size, idle)
+
+
+# --- a browser room: the room's own page sends what it hears ----------------------
+
+def _browser_room(room_id):
+    room = _live_room(room_id)
+    if room.kind != "browser":
+        raise HTTPException(409, "only a browser room takes clips; this room records"
+                                 " on the server")
+    return room
+
+
+@app.get("/api/rooms/{room_id}/listen")
+async def room_listen(room_id: int, sender: dict = Depends(require_room_mic)):
+    """Whether the room's page should record now. While the room is off,
+    Shazam is limiting requests, or the room hears a song it knows, it says
+    how many seconds to wait, so the page does not send a clip for nothing."""
+    return JSONResponse(listener.browser_advice(_browser_room(room_id)), headers=_NO_STORE)
+
+
+@app.post("/api/rooms/{room_id}/clip")
+async def room_clip(room_id: int, request: Request,
+                    sender: dict = Depends(require_room_mic)):
+    """One clip from a browser room's page. It goes the way a server room's
+    capture goes: silence and a known song are not asked about, Shazam is
+    asked through the shared queue, and a match scrobbles for the room's
+    members, once per play."""
+    room = _browser_room(room_id)
+    if not room.running:
+        raise HTTPException(409, "this room is not listening now",
+                            headers={"retry-after": str(BROWSER_OFF_WAIT_SECONDS)})
+    data = await _upload(request)
+    try:
+        wav = await decode_to_wav(data)
+    except ValueError as e:
+        listener.room_failed(room, "the browser sent audio that could not be decoded")
+        raise HTTPException(415, str(e))
+    try:
+        heard = await listener.hear_browser(room, wav)
+    except RateLimited as e:
+        wait = max(1, round(listener.rate_limited_for()))
+        raise HTTPException(429, str(e), headers={"retry-after": str(wait)})
+    except Exception as e:
+        raise HTTPException(502, f"recognition failed: {str(e) or type(e).__name__}")
+    return {**heard, "level_db": room.last_level_db, "floor_db": room.last_floor_db,
+            "next": listener.browser_advice(room)}
 
 
 @app.get("/api/displays")
@@ -624,12 +725,17 @@ async def displays(admin: dict = Depends(require_admin)):
 
 @app.post("/api/displays")
 async def add_display(body: dict, admin: dict = Depends(require_admin)):
-    """A new display token. The answer is the only time it is shown."""
+    """A new display token. The answer is the only time it is shown. With
+    `room_id` it reads that room only, and with `listen` it is also the
+    room's microphone, which needs a browser room."""
+    room_id = body.get("room_id")
     try:
-        made = accounts.create_display(body.get("name"))
-    except ValueError as e:
+        room_id = None if room_id in (None, "") else int(room_id)
+        made = accounts.create_display(body.get("name"), room_id, bool(body.get("listen")))
+    except (TypeError, ValueError) as e:
         raise HTTPException(400, str(e))
-    log.info("display token %r made by %s", made["name"], admin["username"])
+    log.info("display token %r made by %s%s", made["name"], admin["username"],
+             " to listen in a room" if made["listen"] else "")
     return made
 
 
@@ -715,6 +821,9 @@ async def test_audio(body: dict, admin: dict = Depends(require_admin)):
     password, and fields left out use the room's own."""
     saved = rooms.get_room(body["room_id"]) if body.get("room_id") else None
     kind = body.get("kind") or (saved or {}).get("kind") or "device"
+    if kind == "browser":
+        raise HTTPException(400, "a browser room records on its own page; open its"
+                                 " microphone link there and watch the level")
     url = None
     try:
         if kind == "stream":

@@ -14,9 +14,18 @@
  *   mic.stop();
  *
  * onClip returns a promise. Its rejection decides the next step: an error
- * with `status` 401 stops the microphone, 429 waits `retryAfter` seconds, and
- * a network error or a 5xx waits longer each time. ScrobsterMic.upload()
- * makes such errors.
+ * with `status` 401 or 403 stops the microphone, 429 waits `retryAfter`
+ * seconds, and a network error or a 5xx waits longer each time.
+ * ScrobsterMic.upload() makes such errors.
+ *
+ * More options:
+ *   clipMs, gapMs      how long each clip is, and the pause after it
+ *   beforeClip()       asked before each clip. Resolves with null to record
+ *                      now, or {seconds, reason} to wait that long first. It
+ *                      rejects like onClip.
+ *   wav: true          record WAV through WebAudio even where MediaRecorder
+ *                      exists. Without MediaRecorder (iOS before 14.3, old
+ *                      Android WebViews) this is what happens anyway.
  *
  * STATES, with what `info` holds:
  *   starting      asking for the microphone
@@ -24,7 +33,8 @@
  *   sending       a clip is with onClip
  *   interrupted   the microphone was taken away; {error} when reopening failed
  *   waiting       not recording for a while; {reason: "busy"|"network"|"server",
- *                 seconds, until (ms since 1970), error}
+ *                 seconds, until (ms since 1970), error}, or a reason that
+ *                 beforeClip gave, with {advice}
  *   error         one clip failed for another reason; {error}. It goes on.
  *   blocked       permission refused, or no microphone; {error}. It stopped.
  *   signedout     the server answered 401. It stopped.
@@ -46,9 +56,45 @@
   var RETRY_MS = 2000, RETRY_MAX_MS = 30000;
   var NETWORK_MAX_S = 60;
 
+  // Without MediaRecorder (iOS before 14.3, old Android WebViews) the clip is
+  // taken from WebAudio and sent as 16-bit mono WAV at this rate.
+  var WAV_RATE = 16000, WAV_BUFFER = 4096;
+
+  function audioContextClass() { return root.AudioContext || root.webkitAudioContext || null; }
+
   function supported() {
     return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia
-              && root.MediaRecorder);
+              && (root.MediaRecorder || audioContextClass()));
+  }
+
+  // Float samples at `rate` to 16-bit mono WAV at WAV_RATE. Each output
+  // sample is the mean of the input samples it covers, which also keeps out
+  // what would fold back from above 8 kHz.
+  function encodeWav(chunks, rate) {
+    var total = 0, i, j;
+    for (i = 0; i < chunks.length; i++) total += chunks[i].length;
+    var ratio = rate / WAV_RATE, count = Math.floor(total / ratio);
+    var buffer = new ArrayBuffer(44 + count * 2), view = new DataView(buffer);
+    function text(at, s) { for (var k = 0; k < s.length; k++) view.setUint8(at + k, s.charCodeAt(k)); }
+    text(0, "RIFF"); view.setUint32(4, 36 + count * 2, true); text(8, "WAVE");
+    text(12, "fmt "); view.setUint32(16, 16, true); view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true); view.setUint32(24, WAV_RATE, true);
+    view.setUint32(28, WAV_RATE * 2, true); view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true); text(36, "data"); view.setUint32(40, count * 2, true);
+    var chunk = 0, inChunk = 0, read = 0;
+    for (i = 0; i < count; i++) {
+      var end = Math.min(total, Math.round((i + 1) * ratio)), sum = 0, n = 0;
+      for (j = read; j < end; j++) {
+        while (inChunk >= chunks[chunk].length) { chunk += 1; inChunk = 0; }
+        sum += chunks[chunk][inChunk];
+        inChunk += 1; n += 1;
+      }
+      read = end;
+      var s = n ? sum / n : 0;
+      s = s < -1 ? -1 : s > 1 ? 1 : s;
+      view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    }
+    return new Blob([buffer], {type: "audio/wav"});
   }
 
   function pickMimeType() {
@@ -99,6 +145,8 @@
     var onClip = opts.onClip || function () { return Promise.resolve(); };
     var onLevel = opts.onLevel || noop, onState = opts.onState || noop;
     var onDevices = opts.onDevices || noop;
+    var beforeClip = opts.beforeClip || null, advised = false;
+    var useWav = !!opts.wav || !root.MediaRecorder;
 
     var on = false;
     var session = 0;        // each start() is a new one; old callbacks see a stale number
@@ -258,7 +306,41 @@
       }).catch(noop);
     }
 
+    // No MediaRecorder: copy the samples out of WebAudio and make a WAV.
+    function recordWav(s) {
+      return new Promise(function (resolve, reject) {
+        if (!ctx || !ctx.createScriptProcessor) {
+          return reject(new Error("This browser can neither record nor read audio samples."));
+        }
+        resumeContext();
+        var chunks = [], node, input, done = false;
+        try {
+          input = ctx.createMediaStreamSource(s);
+          node = ctx.createScriptProcessor(WAV_BUFFER, 1, 1);
+        } catch (e) { return reject(e); }
+        node.onaudioprocess = function (e) {
+          if (done) return;
+          chunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+          // The output stays silent; it is connected only so the node runs.
+        };
+        var finish = function () {
+          if (done) return;
+          done = true;
+          if (recorder === fake) recorder = null;
+          try { input.disconnect(); node.disconnect(); } catch (e) {}
+          resolve(chunks.length ? encodeWav(chunks, ctx.sampleRate) : new Blob([], {type: "audio/wav"}));
+        };
+        // Looks like a MediaRecorder to spoil(), which stops a clip early.
+        var fake = {state: "recording", stop: function () { fake.state = "inactive"; finish(); }};
+        recorder = fake;
+        try { input.connect(node); node.connect(ctx.destination); }
+        catch (e) { recorder = null; return reject(e); }
+        setTimeout(function () { if (fake.state !== "inactive") fake.stop(); }, clipMs);
+      });
+    }
+
     function recordClip(s) {
+      if (useWav) return recordWav(s);
       return new Promise(function (resolve, reject) {
         var chunks = [], rec, options = {audioBitsPerSecond: bitsPerSecond};
         if (mimeType) options.mimeType = mimeType;
@@ -355,6 +437,27 @@
         retryMs = RETRY_MS;
         say("listening", {recovered: true});
       }
+      if (!beforeClip) return recordNow(s, st);
+      // Ask first whether a clip is wanted now. The microphone stays open
+      // while it waits, so the meter keeps moving.
+      var asked;
+      try { asked = Promise.resolve(beforeClip()); } catch (e) { asked = Promise.reject(e); }
+      asked.then(function (advice) {
+        if (s !== session || !on) return;
+        var seconds = advice && advice.seconds > 0 ? advice.seconds : 0;
+        if (!seconds) {
+          if (st !== stream) return later(s, 0, "recover");
+          if (advised) { advised = false; say("listening", {}); }
+          return recordNow(s, st);
+        }
+        advised = true;
+        say("waiting", {reason: advice.reason || "advice", seconds: seconds,
+                        until: Date.now() + seconds * 1000, advice: advice});
+        later(s, seconds * 1000, "wait");
+      }, function (e) { failed(s, e); });
+    }
+
+    function recordNow(s, st) {
       spoiled = false;
       recordClip(st).then(function (blob) {
         if (s !== session || !on) return;
@@ -379,7 +482,7 @@
 
     function failed(s, e) {
       if (s !== session || !on) return;
-      if (e && e.status === 401) {
+      if (e && (e.status === 401 || e.status === 403)) {
         say("signedout", {error: e});
         stop(true);
         return;
@@ -470,14 +573,18 @@
       stop: function () { stop(false); },
       setDevice: setDevice,
       isOn: function () { return on; },
+      // From a tap: Safari runs audio only once a tap allowed it.
+      resume: function () { resumeContext(); kick(); },
       wakeHeld: function () { return !!lock; },
       stream: function () { return stream; },
-      mimeType: function () { return mimeType; }
+      mimeType: function () { return useWav ? "audio/wav" : mimeType; },
+      usesWav: function () { return useWav; }
     };
   }
 
   root.ScrobsterMic = {
     create: create, upload: upload, supported: supported, pickMimeType: pickMimeType,
+    encodeWav: encodeWav,
     BITS_PER_SECOND: BITS_PER_SECOND, CLIP_MS: CLIP_MS, GAP_MS: GAP_MS
   };
 })(window);

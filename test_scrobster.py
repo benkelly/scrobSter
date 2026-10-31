@@ -266,6 +266,8 @@ def main():
     check_quiet()
     check_display()
     check_browser_clip()
+    check_display_scope_migration()
+    check_browser_room()
     check_install()
     print("ok")
 
@@ -1974,6 +1976,241 @@ def check_browser_clip():
              app.listener._shazam.recognize, app.listener._on_match,
              app.listener._blocked_until, app.listener._backoff) = saved
             config.RECOGNITION_GAP_SECONDS = gap
+
+
+def check_display_scope_migration():
+    """A schema 4 database keeps its display tokens. They read every room and
+    listen nowhere, as before."""
+    import sqlite3
+    from scrobster import accounts, config, db
+
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "v4.db")
+        old = sqlite3.connect(path)
+        old.execute("""CREATE TABLE display_tokens(
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL,
+            last_seen INTEGER)""")
+        token = accounts.DISPLAY_PREFIX + "old-one"
+        old.execute("INSERT INTO display_tokens(name, token_hash, created_at) VALUES(?,?,?)",
+                    ("Hall", accounts._token_hash(token), 1))
+        old.execute("PRAGMA user_version = 4")
+        old.commit()
+        old.close()
+        saved = config.DB_PATH
+        config.DB_PATH = path
+        try:
+            db.init()
+            columns = {r[1] for r in sqlite3.connect(path).execute(
+                "PRAGMA table_info(display_tokens)")}
+            assert {"room_id", "listen"} <= columns, columns
+            screen = accounts.display_by_token(token)
+            assert screen["name"] == "Hall" and screen["room_id"] is None, screen
+            assert screen["listen"] is False
+            version = sqlite3.connect(path).execute("PRAGMA user_version").fetchone()[0]
+            assert version == db.SCHEMA_VERSION == 5, version
+            db.init()  # twice is safe
+        finally:
+            config.DB_PATH = saved
+
+
+def check_browser_room():
+    """A browser room: a tablet sends its clips with a room token. The token
+    posts to its own room only and reads that room only. A clip goes the way
+    a server room's capture goes, and the room fails when clips stop."""
+    import asyncio
+    import time
+    from scrobster import accounts, app, config, db, rooms, scrobble
+    from scrobster import listener as listener_mod
+
+    class Running:
+        def done(self):
+            return False
+
+    asked, decoded, scrobbled = [], {}, []
+
+    async def fake_decode(data):
+        if data not in decoded:
+            raise ValueError("could not decode audio: not audio")
+        return decoded[data]
+
+    async def fake_recognize(wav):
+        asked.append(wav)
+        if wav == decoded[b"busy"]:
+            raise listener_mod.RateLimited("Shazam is limiting requests")
+        return {"matches": [{"offset": 30 + len(asked) * 15}],
+                "track": {"key": "k7", "title": "Song", "subtitle": "Band"}}
+
+    async def fake_scrobble_all(credentials, artist, title, album, ts, extra=None):
+        scrobbled.append(credentials["listenbrainz"]["token"])
+        return {"listenbrainz": "ok"}
+
+    async def nothing(*args, **kwargs):
+        return {}
+
+    with tempfile.TemporaryDirectory() as d:
+        saved = (config.DB_PATH, config.QUIET_DBFS, config.SKIP_KNOWN_SECONDS,
+                 config.RECOGNITION_GAP_SECONDS, app.decode_to_wav,
+                 app.listener._shazam.recognize, app.listener.rooms,
+                 app.listener._blocked_until, app.listener._backoff, app.listener.running,
+                 scrobble.scrobble_all, scrobble.now_playing_all,
+                 listener_mod.enrich.musicbrainz_ids, app.listener._last_plays)
+        config.DB_PATH = os.path.join(d, "browser.db")
+        config.QUIET_DBFS, config.SKIP_KNOWN_SECONDS, config.RECOGNITION_GAP_SECONDS = None, 60, 0
+        app.decode_to_wav = fake_decode
+        app.listener._shazam.recognize = fake_recognize
+        app.listener.rooms, app.listener._last_plays = {}, {}
+        scrobble.scrobble_all, scrobble.now_playing_all = fake_scrobble_all, nothing
+        listener_mod.enrich.musicbrainz_ids = nothing
+        try:
+            db.init()
+            owner = accounts.create_user("owner", "password123", is_admin=True)
+            guest = accounts.create_user("guest", "password123")
+            for user in (owner, guest):
+                accounts.set_credential(user["id"], "listenbrainz",
+                                        {"token": user["username"], "url": "http://lb"})
+            lounge = rooms.add_room(name="Lounge", kind="browser", url="rtsp://x/y",
+                                    device="hw:9", backend="alsa")
+            assert lounge["url"] is None and lounge["device"] is None, "nothing to open"
+            for user in (owner, guest):
+                rooms.set_member(lounge["id"], user["id"], True)
+            asyncio.run(app.listener.sync_rooms())
+            room = app.listener.rooms[lounge["id"]]
+            server = app.listener.first_room()
+            assert room.kind == "browser" and server.kind == "device"
+            assert room.describe() == "clips from a browser in the room"
+            decoded.update({b"silent": _wav(0), b"music": _tone(8000), b"busy": _tone(8001)})
+
+            mic = accounts.create_display("Lounge tablet", lounge["id"], listen=True)
+            plain = accounts.create_display("Hall screen")
+            for bad in ((server.id, True), (None, True), (999, False)):
+                try:
+                    accounts.create_display("x", *bad)
+                    raise AssertionError(f"refused: {bad}")
+                except ValueError:
+                    pass
+            assert [d["listen"] for d in accounts.list_displays()] == [True, False]
+
+            bearer = lambda t: {"authorization": f"Bearer {t}"}
+            m, p = bearer(mic["token"]), bearer(plain["token"])
+            clip = f"/api/rooms/{room.id}/clip"
+            advice = f"/api/rooms/{room.id}/listen"
+
+            def post(body, headers=m, path=clip):
+                status, head, out = _request(app.app, path, headers, "POST", body)
+                return status, head, json.loads(out)
+
+            # Listening is off: the page is told to wait, and a clip is refused.
+            status, _, body = _request(app.app, advice, m)
+            assert status == 200 and json.loads(body)["reason"] == "off", body
+            assert post(b"music")[0] == 409 and asked == []
+
+            app.listener.running = True
+            room.task = server.task = Running()
+            room.expect_by = time.monotonic() + 60
+
+            # Scope: the room token posts to its own room only, reads that room
+            # only, and nothing else. A plain display token never posts.
+            assert post(b"music", p)[0] == 403, "a display token reads, never sends"
+            assert _request(app.app, advice, p)[0] == 403
+            assert post(b"music", m, f"/api/rooms/{server.id}/clip")[0] == 403
+            assert post(b"music", {})[0] == 401
+            assert post(b"music", bearer(guest["api_token"]))[0] == 403, "admins only"
+            assert _request(app.app, f"/api/rooms/{room.id}/now", m)[0] == 200
+            assert _request(app.app, f"/api/rooms/{server.id}/now", m)[0] == 403
+            assert _request(app.app, f"/api/rooms/{server.id}/cover", m)[0] == 403
+            assert _request(app.app, f"/api/rooms/{server.id}/now", p)[0] == 200
+            for path in ("/api/status", "/api/rooms", "/api/displays", "/api/users",
+                         "/api/recognition", "/api/levels", "/api/me"):
+                assert _request(app.app, path, m)[0] == 401, path
+            assert _request(app.app, f"/api/listen?token={mic['token']}", method="POST")[0] == 401
+            assert _request(app.app, "/api/match", m, "POST", b"music")[0] == 401
+            assert asked == [], "no request was let through"
+            # As ?token= too, for a page that cannot set a header.
+            assert _request(app.app, f"{advice}?token={mic['token']}")[0] == 200
+            # Its events are this room's only.
+            ev = {"kind": "match", "ts": 1, "room_id": server.id, "users": [], "match": {}}
+            assert app.display_event(ev, room.id) is None
+            assert app.display_event({**ev, "room_id": room.id}, room.id)["room_id"] == room.id
+
+            # Silence: no Shazam, and the song ends.
+            status, _, j = post(b"silent")
+            assert status == 200 and j["skipped"] == "silent" and asked == [], j
+            assert j["next"]["record"] is True and room.attempts == 1
+            assert room.last_level_db < listener_mod.SILENT_DBFS
+
+            # Music: matched and scrobbled once for each member.
+            status, _, j = post(b"music")
+            assert status == 200 and j["match"]["title"] == "Song" and len(asked) == 1, j
+            assert sorted(scrobbled) == ["guest", "owner"], scrobbled
+            assert room.last_match["room"] == "Lounge"
+            assert db.recent(guest["id"])[0]["room"] == "Lounge", "history says via Lounge"
+            # The same play goes on: matched again, not scrobbled again, and now known.
+            status, _, j = post(b"music")
+            assert status == 200 and len(asked) == 2 and len(scrobbled) == 2, (j, scrobbled)
+            assert j["next"]["reason"] == "known" and j["next"]["wait"] > 0, j
+            status, _, body = _request(app.app, advice, m)
+            assert json.loads(body)["record"] is False, body
+            status, _, j = post(b"music")
+            assert j["skipped"] == "known" and len(asked) == 2, "a known song is not asked"
+            assert room.skipped == 1
+            now = json.loads(_request(app.app, f"/api/rooms/{room.id}/now", m)[2])
+            assert now["playing"] and now["title"] == "Song", now
+
+            # A rate limit: 429 with Retry-After, and the page is told to wait.
+            room.known_key, room.known_until = None, 0.0
+            status, head, j = post(b"busy")
+            assert status == 429 and int(head["retry-after"]) >= 1 and len(asked) == 3
+            assert "limiting" in room.last_error
+            assert json.loads(_request(app.app, advice, m)[2])["reason"] == "busy"
+            assert post(b"music")[0] == 429 and len(asked) == 3, "blocked, not asked"
+            app.listener._blocked_until, app.listener._backoff = 0.0, 0
+
+            # Undecodable audio is a 415 and counts as a failure.
+            assert post(b"garbage")[0] == 415 and room.outage.since is not None
+            assert post(b"silent")[0] == 200 and room.outage.since is None
+
+            # Liveness: no clip in time, the room fails, then recovers.
+            start = time.monotonic()
+            room.expect_by = start + 60
+            app.listener.check_browser(room, start + 30)
+            assert room.outage.since is None, "not yet"
+            app.listener.check_browser(room, start + 61)
+            assert room.outage.since is not None and room.last_error == listener_mod.BROWSER_GONE
+            tries = room.outage.tries
+            app.listener.check_browser(room, start + 70)
+            assert room.outage.tries == tries, "one try per missed window"
+            from scrobster import mqtt
+            snap = {r["id"]: r for r in mqtt.snapshot(app.listener)["rooms"]}
+            assert snap[room.id]["problem"] and "stopped sending" in snap[room.id]["error"]
+            listed = {r["id"]: r for r in app._rooms_for(owner)}
+            assert listed[room.id]["failing_since"] and listed[room.id]["running"]
+            assert post(b"silent")[0] == 200
+            assert room.outage.since is None and room.last_error is None, "back"
+            # A page that waits as told is not counted as gone.
+            room.known_until = time.monotonic() + 300
+            app.listener.browser_advice(room)
+            assert room.expect_by > time.monotonic() + 300
+            room.known_until = 0.0
+
+            # A room's MQTT device says what it is.
+            assert mqtt.room_config(mqtt.Topics("s", "ha", "i"),
+                                    {"id": room.id, "name": "Lounge", "kind": "browser"}
+                                    )["device"]["model"] == "Browser in the room"
+
+            # A server room takes no clips. Removing the room revokes its token.
+            assert post(b"music", bearer(owner["api_token"]),
+                        f"/api/rooms/{server.id}/clip")[0] == 409
+            rooms.delete_room(lounge["id"])
+            assert accounts.display_by_token(mic["token"]) is None
+            assert accounts.display_by_token(plain["token"]) is not None
+        finally:
+            (config.DB_PATH, config.QUIET_DBFS, config.SKIP_KNOWN_SECONDS,
+             config.RECOGNITION_GAP_SECONDS, app.decode_to_wav,
+             app.listener._shazam.recognize, app.listener.rooms,
+             app.listener._blocked_until, app.listener._backoff, app.listener.running,
+             scrobble.scrobble_all, scrobble.now_playing_all,
+             listener_mod.enrich.musicbrainz_ids, app.listener._last_plays) = saved
 
 
 def check_install():

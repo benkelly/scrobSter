@@ -31,6 +31,14 @@ problem:
   the cover. Nothing else, so a token found in a display's URL cannot read
   history, accounts, settings or camera URLs. Only their hash is stored. A
   display token that reads more than that is a security problem.
+- **Room tokens** are display tokens for one browser room that may listen. A
+  room token reads that room's song and cover, and posts audio clips to that
+  room. A match then scrobbles for the room's members, so whoever holds the
+  token can make the room hear something. It cannot read other rooms,
+  history, accounts or settings, and it cannot send audio to another room. A
+  plain display token cannot send audio at all. Revoke a room token under
+  Settings, Displays. Removing the room revokes it too. A token that does more
+  than that is a security problem.
 - **Camera URLs.** A stream URL can carry the camera's password. The web page
   and the API show it as `***`, and errors are cleaned of it.
 - **The MQTT broker.** Whoever can publish to it can start and stop listening,

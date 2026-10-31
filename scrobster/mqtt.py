@@ -286,7 +286,8 @@ def hub_config(topics) -> dict:
 
 def room_config(topics, room) -> dict:
     device_id = topics.device_id("room", room["id"])
-    model = "Camera or stream" if room["kind"] == "stream" else "Microphone"
+    model = {"stream": "Camera or stream", "browser": "Browser in the room"}.get(
+        room["kind"], "Microphone")
     track = "{{ (value_json.track or {}) | tojson }}"
     return _payload(topics, _device(topics, device_id, f"scrobSter {room['name']}", model,
                                     via=True, area=room["name"]),

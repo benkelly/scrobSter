@@ -65,12 +65,22 @@ set a header. Only a display token is read from the URL, never a personal one.
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /display?room=1&idle=clock` | a full-screen page: the cover, title, artist and album. Without `room`, whichever room matched last. `idle` is `clock` or `blank`. Add `&token=` on a screen that is not signed in |
+| `GET /display?room=1&idle=clock` | a full-screen page: the cover, title, artist and album. Without `room`, whichever room matched last. `idle` is `clock` or `blank`. Add `&token=` on a screen that is not signed in. `&listen=1` with a room token also makes it the room's microphone |
 | `GET /api/rooms/{id}/now` | `{room_id, room, playing, artist, title, album, since, heard, art, art_key}`. The song fields are `null` while nothing plays. `since` is when the room started hearing the song, `heard` its last match, `art` the room's cover route, and `art_key` changes with the cover |
 | `GET /api/now` | the same, for whichever room that plays matched last, or `room_id: null` |
 | `GET /api/rooms/{id}/cover?size=600&idle=204` | the cover itself, fetched once per song and kept in memory. It carries an `ETag`, so asking again with `If-None-Match` costs a `304`. `size` is 32 to 1200 pixels square: Apple's covers are fetched at that size, any other is served as it is |
 | `GET /api/cover` | the same, for the room `/api/now` picks |
 | `GET /api/events` | a display token sees only `match` events with their `room_id`, and `rooms` and `listening`. Read `now` again on each |
+| `GET /api/rooms/{id}/listen` | for a browser room's page: `{record, wait, reason, clip_seconds, interval}`. `record` is false while the room is off (`reason: off`), Shazam limits requests (`busy`), or the room hears a song it knows (`known`). `wait` is the seconds to wait first. Needs the room's own room token, or an administrator |
+| `POST /api/rooms/{id}/clip` | one clip from a browser room's page, as the raw body (WebM, Ogg, MP4 or WAV, up to 10 MB). The answer is `{skipped, match, level_db, floor_db, next}`: `skipped` is `silent`, `quiet`, `known` or `null`, and `next` is what `listen` would say now. `429` with `Retry-After` while Shazam limits requests, `409` for a room that is not a browser room or is not listening, `415` for audio that does not decode. Needs the room's own room token, or an administrator |
+
+A display token made with a room and **Use this browser as the room's
+microphone** is a room token. It reads that room only: `/api/now` and
+`/api/cover` answer with that room, another room's routes answer `403`, and its
+event stream carries that room's matches only. It is the only display token
+that may use `listen` and `clip`, and only for its own room. A plain display
+token gets `403` there. `POST /api/displays` takes `{name, room_id, listen}`;
+`listen` needs a browser room.
 
 A room plays from its match until `NOW_PLAYING_STOP_SECONDS` pass without
 another, its last clip is silence or below `QUIET_DBFS`, or it stops listening.
