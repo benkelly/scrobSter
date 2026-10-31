@@ -13,6 +13,8 @@ This is how the add-on connects to Home Assistant:
 
 ```mermaid
 flowchart TD
+    accTitle: The add-on inside Home Assistant
+    accDescr: You reach the scrobSter add-on through Home Assistant ingress. The Supervisor gives it its options file and the MQTT broker's address and login. A microphone reaches it through Home Assistant's PulseAudio and ALSA. The add-on sends discovery and states to the Mosquitto broker and takes switch and number commands back, and the broker shows them as devices and entities in Home Assistant.
     you["You, signed in to Home Assistant"] -- ingress --> addon["scrobSter add-on"]
     sup["Supervisor"] -- "/data/options.json" --> addon
     sup -- "broker address and login" --> addon

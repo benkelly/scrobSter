@@ -11,6 +11,8 @@ default:
 
 ```mermaid
 flowchart TD
+    accTitle: One room's listening cycle
+    accDescr: The room waits out any Shazam pause, records a 12-second clip and checks its level. A silent or quiet clip makes it forget the song, and a known song still playing asks nothing. Otherwise it waits for the shared slot and asks Shazam. A match is scrobbled once per play for each member, and HTTP 429 pauses every room for 1 to 10 minutes. The room then waits until MATCH_INTERVAL has passed and starts again.
     pause["Wait out any Shazam pause"] --> rec["Record a 12 s clip with ffmpeg"]
     rec --> level{"Silent or quiet?"}
     level -- yes --> forget["Forget the song, ask nothing"]
@@ -38,6 +40,8 @@ once and then retries more slowly:
 
 ```mermaid
 stateDiagram-v2
+    accTitle: A failing room backs off
+    accDescr: A room starts out working. The first failure logs one warning and moves it to failing, where it retries with the wait doubling up to once a minute. When it recovers, it logs one line and is working again.
     direction LR
     Working --> Failing: first failure, one warning
     Failing --> Failing: retry, doubling up to once a minute
@@ -56,6 +60,8 @@ living room:
 
 ```mermaid
 sequenceDiagram
+    accTitle: Two rooms sharing one Shazam slot
+    accDescr: The kitchen sends a clip through the shared slot, Shazam answers Song X, and the kitchen scrobbles it for Ann. The living room's clip waits RECOGNITION_GAP_SECONDS in the slot, Shazam answers the same song, and it is scrobbled for Bob. Ann already has that play, so it is not scrobbled for her again.
     participant K as Kitchen
     participant L as Living room
     participant G as Shared slot
