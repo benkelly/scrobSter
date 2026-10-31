@@ -52,11 +52,11 @@ with the `python-version` in `.github/workflows/ci.yml`.
 ## Pull requests
 
 - **Keep the docs with the change.** Anything a user would notice, such as a
-  setting, an API route or an MQTT entity, goes in the README in the same pull
+  setting, an API route or an MQTT entity, goes in the README or docs/ in the same pull
   request.
 - **Do not bump the version** for ordinary work. `__version__` in
   `scrobster/__init__.py` is what cuts a release, so only a release changes it.
-  See Releasing in the README.
+  See [Releasing](docs/releasing.md).
 - **Match the surrounding code.** There is no formatter or linter to satisfy.
   Follow the style of the file you change, and explain why in comments, not
   what.

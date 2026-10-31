@@ -1,5 +1,5 @@
 name: Bug report
-description: Something does not work as the README says it should.
+description: Something does not work as the README or docs/ say it should.
 labels: [bug]
 body:
   - type: markdown
