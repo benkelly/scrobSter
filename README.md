@@ -302,10 +302,10 @@ Index 0 is not always the microphone. On a Mac with virtual audio software, inde
 
 ## Docker (Linux host)
 
-Images are published to GitHub Packages for `linux/amd64` and `linux/arm64`, so
-a Raspberry Pi works with a 64-bit OS. A Raspberry Pi 3 or later can run one.
-On a 32-bit OS (`uname -m` prints `armv7l`), there is no image yet; install
-without Docker as in Quick start, and run it as a service as below.
+Images are published to GitHub Packages for `linux/amd64`, `linux/arm64` and
+`linux/arm/v7`, so a Raspberry Pi works on a 64-bit or a 32-bit OS, for example
+a Pi 3B on DietPi or Raspberry Pi OS. Docker pulls the right one by itself. To
+run without Docker, install as in Quick start and run it as a service as below.
 
 ```sh
 docker run -d --name scrobster \
