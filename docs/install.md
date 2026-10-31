@@ -2,6 +2,25 @@
 
 For the Home Assistant add-on, see [Home Assistant](home-assistant.md).
 
+Every way runs the same single process, with its SQLite database. This is what
+it talks to:
+
+```mermaid
+flowchart TD
+    subgraph run["Run it one way"]
+        docker["Docker on Linux or a Pi"]
+        systemd["systemd service"]
+        helm["Kubernetes with Helm"]
+        addon["Home Assistant add-on"]
+    end
+    snd["Sound card on the host"] --> app
+    cams["Cameras, RTSP or RTSPS"] --> app
+    run --> app["scrobSter, port 8000"]
+    browser["Browser"] <--> app
+    app --> shazam["Shazam"]
+    app --> services["Last.fm, Libre.fm, ListenBrainz, Maloja"]
+```
+
 ## Docker (Linux host)
 
 Images are published to GitHub Packages for `linux/amd64`, `linux/arm64` and

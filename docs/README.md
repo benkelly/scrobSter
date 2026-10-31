@@ -10,6 +10,8 @@ the Quick start.
   environment variable, connecting Last.fm, and cover art.
 - **[Home Assistant](home-assistant.md)**: the add-on and devices over MQTT.
 - **[API](api.md)**: every route, and a REST sensor for Home Assistant.
+- **[Architecture](architecture.md)**: diagrams of one room's cycle, and of
+  rooms sharing the Shazam rate limit.
 - **[Troubleshooting](troubleshooting.md)**: what to check when nothing
   matches, and the measured recognition limits.
 - **[Releasing](releasing.md)**: for maintainers, how a version is published and
