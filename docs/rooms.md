@@ -30,6 +30,8 @@ A camera reaches its room directly, or through a restream:
 
 ```mermaid
 flowchart LR
+  accTitle: Camera audio reaching a stream room
+  accDescr: On your network, an IP camera with audio on, in AAC at 16 kHz or more, feeds a scrobSter stream room directly, or optionally through a go2rtc or Frigate restream. UniFi Protect feeds the room over RTSPS. The room reads RTSP over TCP and takes the audio only.
   subgraph net["Your network"]
     cam(["IP camera<br/>audio on<br/>AAC, 16 kHz or more"])
     rs["go2rtc or Frigate restream<br/>rtsp://host:8554/camera"]
@@ -69,6 +71,8 @@ A home-made stream looks like this:
 
 ```mermaid
 flowchart LR
+  accTitle: A line out streamed by a microcontroller
+  accDescr: A line out goes, as analogue sound, to an ADC. The digital signal goes to a microcontroller such as an ESP32, which streams it over HTTP or RTSP at 16 kHz or more to a scrobSter stream room.
   out(["Line out"]) -->|"analogue"| adc(["ADC"])
   adc -->|"digital"| mcu(["Microcontroller<br/>for example an ESP32"])
   mcu -->|"HTTP or RTSP<br/>16 kHz or more"| room["scrobSter stream room"]
@@ -94,6 +98,8 @@ The turntable is a sound card on the server, so no other hardware sits in betwee
 
 ```mermaid
 flowchart LR
+  accTitle: A USB turntable on the server
+  accDescr: A USB turntable with a built-in preamp and USB codec connects by USB cable to the server, for example a Raspberry Pi. There it is the ALSA card hw:CARD=CODEC,DEV=0, which feeds a scrobSter microphone room.
   subgraph hifi["Hi-fi"]
     tt(["USB turntable<br/>built-in preamp<br/>and USB codec"])
   end
@@ -109,6 +115,8 @@ A turntable or hi-fi without USB needs a USB audio interface, or a line input, a
 
 ```mermaid
 flowchart LR
+  accTitle: A turntable or amplifier into a line input
+  accDescr: A turntable with no built-in preamp sends phono level, with its ground wire, to a phono preamp, which sends line level over RCA to a USB audio interface or line in on the server. A turntable with a built-in preamp switched to LINE, or an amplifier's tape out or line out, connects to that input directly at line level. The input feeds a scrobSter microphone room.
   subgraph hifi["Hi-fi"]
     bare(["Turntable<br/>no built-in preamp"])
     pre(["Phono preamp, RIAA"])
@@ -213,6 +221,8 @@ The microphone hears the speakers, and ffmpeg records it on the server:
 
 ```mermaid
 flowchart LR
+  accTitle: A microphone hearing the speakers
+  accDescr: Speakers play into the room, and a microphone or USB microphone picks up the sound. On the server, ffmpeg records it from AUDIO_DEVICE and passes it to a scrobSter microphone room.
   spk(["Speakers"]) -.->|"sound in the room"| mic(["Microphone<br/>or USB microphone"])
   subgraph server["Server"]
     ff["ffmpeg<br/>AUDIO_DEVICE"]
@@ -248,6 +258,8 @@ A phone reaches the server like this:
 
 ```mermaid
 flowchart LR
+  accTitle: A browser recording on a phone
+  accDescr: A phone or laptop browser sends 12-second clips over HTTPS to a reverse proxy or Tailscale, which passes them to scrobSter as POST /api/match.
   phone(["Phone or laptop browser"]) -->|"12-second clips<br/>over HTTPS"| proxy["Reverse proxy or Tailscale"]
   proxy -->|"POST /api/match"| app["scrobSter"]
 ```

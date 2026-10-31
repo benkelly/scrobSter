@@ -7,6 +7,8 @@ it talks to:
 
 ```mermaid
 flowchart TD
+    accTitle: What scrobSter talks to
+    accDescr: You run scrobSter one way, with Docker on Linux or a Pi, a systemd service, Kubernetes with Helm, or the Home Assistant add-on. Either way it listens on port 8000, takes sound from the host's sound card and from cameras over RTSP or RTSPS, talks both ways with your browser, asks Shazam, and scrobbles to Last.fm, Libre.fm, ListenBrainz and Maloja.
     subgraph run["Run it one way"]
         docker["Docker on Linux or a Pi"]
         systemd["systemd service"]

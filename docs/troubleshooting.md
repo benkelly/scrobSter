@@ -4,6 +4,8 @@ Start from what the room shows:
 
 ```mermaid
 flowchart LR
+  accTitle: What to do when nothing matches
+  accDescr: Start from no match and look at what the room shows. A level near -91 dB means a silent device, so pick another AUDIO_DEVICE. A level near -20 dB means the sound is too poor, so raise the volume, move the mic closer or use a line input. If the room asks Shazam in the run-out groove, set QUIET_DBFS to -50 or a value from floor_db. HTTP 429 means it is rate-limited, so increase MATCH_INTERVAL. A camera error means you should turn the audio on, choose AAC at 16 kHz or more, and use a restream.
   start(["No match"]) --> what{"What does<br/>the room show?"}
   what -->|"level near -91 dB"| silent["Silent device:<br/>pick another<br/>AUDIO_DEVICE"]
   what -->|"level near -20 dB"| poor["Sound too poor:<br/>raise the volume,<br/>move the mic closer,<br/>or use a line input"]

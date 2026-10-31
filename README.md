@@ -6,7 +6,39 @@
 
 Self-hosted background-audio scrobbler. It listens to audio inputs (a mic, a line-in, a USB turntable, or the audio of your security cameras), identifies songs with Shazam, and scrobbles them to Last.fm, Libre.fm, ListenBrainz, and Maloja. Point it at a radio, a TV, or every room in the house.
 
-<img width="1012" height="991" alt="image" src="https://github.com/user-attachments/assets/14454c0a-fd00-415c-8560-9b9a88de72b6" />
+<img src="docs/images/hero.png" width="700" alt="The scrobSter web page, Listening tab: a Stop listening button, sending to Last.fm, ListenBrainz and Maloja from 2 of 3 rooms, Dreams by Fleetwood Mac playing now via the living room turntable, and a list of recent scrobbles with the services each one was sent to">
+
+## Contents
+
+On this page: [How it works](#how-it-works), [Requirements](#requirements),
+[Quick start](#quick-start) and [Notes](#notes).
+
+<!-- Guides: step-by-step guides in docs/guides/ go here, as a "**Guides**" list above "**Set up**". -->
+
+**Set up**
+
+- **[Install](docs/install.md)**: [Docker](docs/install.md#docker-linux-host),
+  a [systemd service](docs/install.md#run-as-a-service-systemd) or
+  [Kubernetes with Helm](docs/install.md#kubernetes-helm).
+- **[Rooms and cameras](docs/rooms.md)**: cameras, USB turntables,
+  [finding your audio device](docs/rooms.md#find-your-audio-device) and the
+  [two ways to listen](docs/rooms.md#two-ways-to-listen).
+- **[Accounts and configuration](docs/configuration.md)**: accounts,
+  [every environment variable](docs/configuration.md#configuration-environment-variables),
+  [connecting Last.fm](docs/configuration.md#connect-lastfm) and cover art.
+- **[Home Assistant](docs/home-assistant.md)**: the add-on and
+  [devices over MQTT](docs/home-assistant.md#devices-over-mqtt).
+
+**Reference**
+
+- **[API](docs/api.md)**: every route, and a REST sensor for Home Assistant.
+- **[Architecture](docs/architecture.md)**: diagrams of one room's cycle, and
+  of rooms sharing the Shazam rate limit.
+- **[Troubleshooting](docs/troubleshooting.md)**: what to check when nothing
+  matches, and the
+  [measured recognition limits](docs/troubleshooting.md#recognition-limits-measured).
+- **[Releasing](docs/releasing.md)**: for maintainers, how a version is
+  published and [verified](docs/releasing.md#verifying).
 
 ## How it works
 
@@ -21,6 +53,8 @@ shows one room's cycle, and how rooms share Shazam.
 
 ```mermaid
 flowchart TD
+    accTitle: How scrobSter turns sound into scrobbles
+    accDescr: A sound card or a camera feeds ffmpeg, which records a clip in each room. A silent or quiet clip is dropped. Otherwise its locally made fingerprint goes to Shazam, as does a clip posted from a browser microphone. A match gets MusicBrainz IDs from its ISRC and, if it is a new play for the user, is scrobbled to their Last.fm, Libre.fm, ListenBrainz and Maloja. Match and scrobble events also go to Home Assistant over MQTT and to GET /api/events.
     mic["Sound card on the server"] --> cap
     cam["Camera or stream"] --> cap
     cap["ffmpeg records a clip in each room"] --> level{"Silent or quiet?"}
@@ -99,29 +133,6 @@ Test recognition with a file first:
 ```sh
 .venv/bin/python -m scrobster.listener some-song.wav
 ```
-
-## Documentation
-
-- **[Install](docs/install.md)**: [Docker (Linux host)](docs/install.md#docker-linux-host),
-  [Run as a service (systemd)](docs/install.md#run-as-a-service-systemd) and
-  [Kubernetes (Helm)](docs/install.md#kubernetes-helm).
-- **[Rooms and cameras](docs/rooms.md)**: cameras, USB turntables and the Shazam
-  rate limit, [Find your audio device](docs/rooms.md#find-your-audio-device) and
-  [Two ways to listen](docs/rooms.md#two-ways-to-listen).
-- **[Accounts and configuration](docs/configuration.md)**: [Accounts](docs/configuration.md#accounts),
-  [Configuration (environment variables)](docs/configuration.md#configuration-environment-variables),
-  [Connect Last.fm](docs/configuration.md#connect-lastfm) and
-  [Cover art and MusicBrainz IDs](docs/configuration.md#cover-art-and-musicbrainz-ids).
-- **[Home Assistant](docs/home-assistant.md)**: the add-on and
-  [Devices over MQTT](docs/home-assistant.md#devices-over-mqtt).
-- **[API](docs/api.md)**: every route, and a REST sensor for Home Assistant.
-- **[Architecture](docs/architecture.md)**: diagrams of one room's cycle, and
-  of rooms sharing the Shazam rate limit.
-- **[Troubleshooting](docs/troubleshooting.md)**: no match, a turntable's
-  run-out groove, macOS problems, and
-  [Recognition limits (measured)](docs/troubleshooting.md#recognition-limits-measured).
-- **[Releasing](docs/releasing.md)**: for maintainers, how a version is
-  published, and [Verifying](docs/releasing.md#verifying) the signatures.
 
 ## Notes
 
