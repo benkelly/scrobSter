@@ -118,6 +118,12 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD")
 TRUST_INGRESS = os.environ.get("TRUST_INGRESS", "1").lower() not in ("0", "false", "no")
 INGRESS_IP = os.environ.get("INGRESS_IP", "172.30.32.2")
 LISTEN_ON_START = os.environ.get("LISTEN_ON_START", "1").lower() not in ("0", "false", "no")
+# A new database starts with one microphone room, "Server mic", so an install
+# with a sound card listens straight away. "0" starts it with no rooms, for a
+# host with no sound card that only reads cameras. It is read once, when the
+# database is made: an existing database keeps the rooms it has.
+CREATE_SERVER_MIC_ROOM = os.environ.get("CREATE_SERVER_MIC_ROOM", "1").lower() not in (
+    "0", "false", "no")
 
 LASTFM_API_KEY = os.environ.get("LASTFM_API_KEY")
 LASTFM_API_SECRET = os.environ.get("LASTFM_API_SECRET")

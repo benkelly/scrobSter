@@ -69,6 +69,7 @@ A service is enabled when all of its variables are set.
 | `INGRESS_IP` | `172.30.32.2` | the address ingress requests come from |
 | `API_TOKEN` | unset | optional shared token that acts as the owner. Each user also has a personal token |
 | `LISTEN_ON_START` | `1` | start listening in every room that is turned on at boot |
+| `CREATE_SERVER_MIC_ROOM` | `1` | give a new database the microphone room **Server mic**. `0` starts it with no rooms, for a host with no sound card that only reads cameras. Read once, when the database is made: an existing database keeps its rooms. The Helm chart sets it from `createServerMicRoom` |
 | `LASTFM_API_KEY` `LASTFM_API_SECRET` | unset | identifies this application to Last.fm, for every user. Create a key at https://www.last.fm/api/account/create |
 | `MQTT_ENABLED` | `auto` | Home Assistant devices over MQTT. `auto` connects when `MQTT_HOST` is set or the Supervisor offers a broker. `0` turns it off. See [Home Assistant](home-assistant.md) |
 | `MQTT_HOST` `MQTT_PORT` | unset, `1883` | the broker |

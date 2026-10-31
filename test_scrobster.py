@@ -254,6 +254,7 @@ def main():
     check_keep_listening()
     check_enrich()
     check_rooms()
+    check_server_mic_room()
     check_rates()
     check_events()
     check_mqtt()
@@ -921,6 +922,53 @@ def check_rooms():
         assert len(asked) == 1, "the room that waits does not ask"
     finally:
         config.RECOGNITION_GAP_SECONDS = gap
+
+
+def check_server_mic_room():
+    """CREATE_SERVER_MIC_ROOM=0 starts a new database with no rooms, for a host
+    that only reads cameras, and never takes the room from a database that has
+    one."""
+    import sqlite3
+    from scrobster import config, db, rooms
+
+    with tempfile.TemporaryDirectory() as d:
+        saved = config.DB_PATH, config.CREATE_SERVER_MIC_ROOM
+        try:
+            config.DB_PATH = os.path.join(d, "default.db")
+            db.init()
+            assert [r["name"] for r in rooms.list_rooms()] == ["Server mic"], \
+                "by default a new database starts with the microphone room"
+
+            config.CREATE_SERVER_MIC_ROOM = False
+            db.init()
+            assert [r["name"] for r in rooms.list_rooms()] == ["Server mic"], \
+                "an existing database keeps its room"
+
+            config.DB_PATH = os.path.join(d, "cameras.db")
+            db.init()
+            db.init()
+            assert rooms.list_rooms() == [], "a cameras-only install starts empty"
+
+            # A schema 2 database had a microphone, so it still becomes a room.
+            config.DB_PATH = os.path.join(d, "schema2.db")
+            with sqlite3.connect(config.DB_PATH) as c:
+                c.executescript("""
+                    CREATE TABLE matches(id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        ts INTEGER NOT NULL, artist TEXT, title TEXT, album TEXT,
+                        track_key TEXT, art_url TEXT,
+                        source TEXT NOT NULL DEFAULT 'server');
+                    CREATE TABLE users(id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                        password_hash TEXT NOT NULL, is_admin INTEGER NOT NULL DEFAULT 0,
+                        room_mic INTEGER NOT NULL DEFAULT 0, api_token TEXT UNIQUE,
+                        created_at INTEGER NOT NULL);
+                    CREATE TABLE settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                    PRAGMA user_version = 2;""")
+            db.init()
+            assert [r["name"] for r in rooms.list_rooms()] == ["Server mic"], \
+                "an upgrade keeps the microphone it had"
+        finally:
+            config.DB_PATH, config.CREATE_SERVER_MIC_ROOM = saved
 
 
 def check_rates():
