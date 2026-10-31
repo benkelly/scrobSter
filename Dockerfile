@@ -1,3 +1,18 @@
+# PyPI has no 32-bit ARM wheels for numpy or shazamio-core, so a linux/arm/v7
+# build compiles them here. shazamio-core is Rust, and its audio crate links
+# ALSA. Other platforms leave /wheels empty and install from PyPI as before.
+FROM python:3.12-slim AS wheels
+ARG TARGETARCH
+ARG TARGETVARIANT
+COPY requirements.txt .
+RUN mkdir /wheels \
+    && if [ "${TARGETARCH}/${TARGETVARIANT}" = "arm/v7" ]; then \
+        apt-get update \
+        && apt-get install -y --no-install-recommends \
+            build-essential cargo pkg-config libasound2-dev \
+        && pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt; \
+    fi
+
 FROM python:3.12-slim
 
 # libasound2-plugins provides libasound_module_pcm_pulse.so. Home Assistant
@@ -9,7 +24,10 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# The wheels are mounted, not copied, so they and the compilers stay out of
+# the image.
+RUN --mount=type=bind,from=wheels,source=/wheels,target=/wheels \
+    pip install --no-cache-dir --find-links /wheels -r requirements.txt
 COPY scrobster ./scrobster
 
 # Do not set AUDIO_BACKEND or AUDIO_DEVICE here. A real environment variable

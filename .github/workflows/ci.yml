@@ -152,6 +152,27 @@ jobs:
             'ls /usr/lib/*/alsa-lib/libasound_module_pcm_pulse.so' >/dev/null
           docker rm -f smoke
 
+      # 32-bit ARM compiles numpy and shazamio-core from source, so a dependency
+      # bump can break only that platform. Build it here, where a pull request
+      # sees the failure, rather than in the release after the merge. The cache
+      # makes this quick unless requirements.txt changed. Its own scope stops it
+      # replacing the cache the smoke test build just wrote.
+      - name: Build for 32-bit ARM
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/arm/v7
+          load: true
+          tags: scrobster:armv7
+          cache-from: type=gha,scope=armv7
+          cache-to: type=gha,scope=armv7,mode=max
+
+      # Importing the compiled modules proves the wheels match the image.
+      - name: Check the 32-bit ARM image
+        run: |
+          docker run --rm --platform linux/arm/v7 scrobster:armv7 \
+            python -c "import numpy, shazamio_core, scrobster.app"
+
   # helm template only proves the chart renders. Installing it into a real
   # cluster proves the pod starts, the volume is writable as uid 1000, and
   # the service reaches the app.
@@ -311,11 +332,14 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
+          # The armv7 scope holds the wheels the docker job just compiled.
+          cache-from: |
+            type=gha
+            type=gha,scope=armv7
           cache-to: type=gha,mode=max
           provenance: mode=max
           sbom: true
