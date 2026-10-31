@@ -38,6 +38,10 @@ sensor:
 
 Put `scrobster_token: Bearer your-token-here` in `secrets.yaml`.
 
+The token is under Settings, hidden until you select Show:
+
+![Settings, Your API token: the token hidden, with Show, Copy and Replace token buttons](images/settings-token.png)
+
 For a sensor per room, such as "what is playing in the kitchen", use this
 `value_template` instead:
 
