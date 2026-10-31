@@ -1,15 +1,19 @@
 # PyPI has no 32-bit ARM wheels for numpy or shazamio-core, so a linux/arm/v7
 # build compiles them here. shazamio-core is Rust, and its audio crate links
 # ALSA. Other platforms leave /wheels empty and install from PyPI as before.
+# shazamio-core 2 needs rustc 1.87, newer than Debian's, so rustup installs it.
 FROM python:3.12-slim AS wheels
 ARG TARGETARCH
 ARG TARGETVARIANT
+ENV PATH="/root/.cargo/bin:${PATH}"
 COPY requirements.txt .
 RUN mkdir /wheels \
     && if [ "${TARGETARCH}/${TARGETVARIANT}" = "arm/v7" ]; then \
         apt-get update \
         && apt-get install -y --no-install-recommends \
-            build-essential cargo pkg-config libasound2-dev \
+            build-essential ca-certificates curl pkg-config libasound2-dev \
+        && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain 1.87.0 \
         && pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt; \
     fi
 
