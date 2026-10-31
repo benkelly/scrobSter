@@ -33,6 +33,9 @@ log = logging.getLogger("scrobster")
 MAX_SEGMENT_SECONDS = 14
 # Below this peak there is nothing to identify, so skip the request and save quota.
 SILENT_DBFS = -70.0
+# A clip's floor is the median level of its windows this long. A click or a pop
+# fills one window, so it raises the peak but not the floor. See QUIET_DBFS.
+FLOOR_WINDOW_SECONDS = 0.05
 # Give up on one Shazam request after this long.
 SHAZAM_TIMEOUT_SECONDS = 30
 # How far back the request count on the Rooms tab looks.
@@ -193,14 +196,43 @@ def peak_dbfs(wav: bytes) -> float:
         return peak_dbfs_pcm(w.readframes(w.getnframes()))
 
 
-def peak_dbfs_pcm(frames: bytes) -> float:
-    """Peak level of raw 16-bit samples, as peak_dbfs()."""
+def _samples(frames: bytes) -> array.array:
     samples = array.array("h")
     samples.frombytes(frames[: len(frames) - len(frames) % 2])
     if sys.byteorder == "big":
         samples.byteswap()
+    return samples
+
+
+def peak_dbfs_pcm(frames: bytes) -> float:
+    """Peak level of raw 16-bit samples, as peak_dbfs()."""
+    samples = _samples(frames)
     peak = max(max(samples), -min(samples)) if samples else 0
     return round(20 * math.log10(peak / 32768), 1) if peak > 0 else -99.0
+
+
+def floor_dbfs(wav: bytes) -> float:
+    """The level most of a clip sits at: the median RMS of its
+    FLOOR_WINDOW_SECONDS windows, in dBFS. Digital silence returns -99.0.
+
+    A record that has ended still sends surface noise, clicks and pops. Their
+    peak is far above SILENT_DBFS, but the median ignores a few loud windows.
+    """
+    with wave.open(io.BytesIO(wav)) as w:
+        size = max(1, int(w.getframerate() * FLOOR_WINDOW_SECONDS))
+        samples = _samples(w.readframes(w.getnframes()))
+    # A short last window would count as much as a whole one, so it is left
+    # out, unless the clip is shorter than one window.
+    windows = [samples[i:i + size] for i in range(0, max(1, len(samples) - size + 1), size)]
+    levels = sorted(sum(s * s for s in w) / len(w) for w in windows if w)
+    mean_square = levels[len(levels) // 2] if levels else 0
+    return round(10 * math.log10(mean_square / 32768 ** 2), 1) if mean_square > 0 else -99.0
+
+
+def is_quiet(floor_db, quiet_dbfs) -> bool:
+    """True when a clip that is not silent is still too quiet to be music, such
+    as a record between sides. Off while `quiet_dbfs` is None."""
+    return quiet_dbfs is not None and floor_db < quiet_dbfs
 
 
 def parse_track(result) -> dict | None:
@@ -613,6 +645,8 @@ class Room:
         self.known_key = None
         self.known_until = 0.0
         self.last_level_db = None
+        self.last_floor_db = None
+        self.quiet = False  # the last clip was noise below QUIET_DBFS
         self._live_levels = collections.deque()  # (monotonic, dBFS) per block
         self.last_error = None
         self._warned_silent = False
@@ -822,10 +856,17 @@ class Listener:
                 room.attempts += 1
                 room.last_attempt = int(time.time())
                 room.last_level_db = peak_dbfs(wav)
-                if room.last_level_db < SILENT_DBFS:
+                room.last_floor_db = floor_dbfs(wav)
+                silent = room.last_level_db < SILENT_DBFS
+                quiet = not silent and is_quiet(room.last_floor_db, config.QUIET_DBFS)
+                if quiet and not room.quiet:
+                    log.info("%s is quiet (floor %.0f dBFS), skipping recognition until"
+                             " it plays again", room.name, room.last_floor_db)
+                room.quiet = quiet
+                if silent or quiet:
                     room.known_key, room.known_until = None, 0.0  # the song ended
                     # Nothing audible: skip the request instead of spending quota on silence.
-                    if not room._warned_silent:
+                    if silent and not room._warned_silent:
                         log.warning("%s is silent (%.0f dBFS), skipping recognition -"
                                     " is its input %s correct?",
                                     room.name, room.last_level_db, room.describe())

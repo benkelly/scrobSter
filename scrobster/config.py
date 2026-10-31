@@ -98,6 +98,13 @@ RESCROBBLE_MINUTES = int(os.environ.get("RESCROBBLE_MINUTES", "30"))
 # Clear the playing-now mark after this long with no match. Keep it well above one
 # song, because matches drop out during quiet passages and the mark would flicker.
 NOW_PLAYING_STOP_SECONDS = int(os.environ.get("NOW_PLAYING_STOP_SECONDS", "180"))
+# A clip whose floor, its median level with clicks and pops ignored, is below
+# this many dBFS counts as silence: Shazam is not asked and the room forgets
+# its song. For a turntable, whose run-out groove still sends surface noise.
+# Off by default. A record's surface sits near -50 to -60 dBFS, and quiet
+# music through a distant microphone or a camera can sit there too, so only
+# the owner of the input can tell where silence ends.
+QUIET_DBFS = float(os.environ["QUIET_DBFS"]) if os.environ.get("QUIET_DBFS") else None
 DB_PATH = os.environ.get("DB_PATH", "scrobster.db")
 PORT = int(os.environ.get("PORT", "8000"))
 # Legacy shared token. It still works, as an admin key, so an existing Home
