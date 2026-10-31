@@ -1705,10 +1705,11 @@ def check_display():
     """A display token reads what the rooms play and nothing else. The cover
     has a fixed URL, a size, an ETag, and a defined answer while nothing plays."""
     import asyncio
+    import shutil
     import sqlite3
     import struct
+    import subprocess
     import time
-    import zlib
     from scrobster import accounts, app, config, db, display
 
     class Running:
@@ -1728,12 +1729,22 @@ def check_display():
     assert display.sized_url("http://is1.mzstatic.com.evil/image/thumb/a/400x400cc.jpg",
                              300).endswith("400x400cc.jpg"), "only Apple's own host"
 
-    # The idle picture is a real PNG of the asked size, black throughout.
-    png = display.idle_png(64)
-    assert png.startswith(b"\x89PNG\r\n\x1a\n")
-    assert struct.unpack(">II", png[16:24]) == (64, 64)
-    idat = png[png.index(b"IDAT") + 4:png.index(b"IEND") - 8]
-    assert set(zlib.decompress(idat)) == {0} and len(zlib.decompress(idat)) == 65 * 64
+    # The idle picture is a baseline JPEG of the asked size, like the covers, so
+    # a client that decodes one format shows both. Black throughout.
+    jpeg = display.idle_jpeg(64)
+    assert jpeg.startswith(b"\xff\xd8\xff\xe0") and jpeg.endswith(b"\xff\xd9")
+    sof = jpeg.index(b"\xff\xc0")
+    assert struct.unpack(">BHHB", jpeg[sof + 4:sof + 10]) == (8, 64, 64, 3), "baseline, 64 square"
+    assert jpeg.count(b"\xff\xc4") == 4, "the standard Huffman tables"
+    for size in (32, 33, 1200):
+        sof = display.idle_jpeg(size).index(b"\xff\xc0")
+        assert struct.unpack(">HH", display.idle_jpeg(size)[sof + 5:sof + 9]) == (size, size)
+    if shutil.which("ffmpeg"):
+        for size in (64, 33):
+            raw = subprocess.run(["ffmpeg", "-v", "error", "-f", "jpeg_pipe", "-i", "-",
+                                  "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+                                 input=display.idle_jpeg(size), capture_output=True, check=True)
+            assert len(raw.stdout) == size * size and set(raw.stdout) == {0}, (size, raw.stderr)
 
     # A display sees a match in a room, and that rooms or listening changed.
     assert app.display_event({"kind": "match", "ts": 1, "room_id": 2, "users": [1],
@@ -1813,7 +1824,7 @@ def check_display():
             assert _request(app.app, cover)[0] == 204, "the default"
             assert _request(app.app, cover + "&idle=404")[0] == 404
             status, head, body = _request(app.app, cover + "&idle=image&size=64")
-            assert status == 200 and head["content-type"] == "image/png" and body == png
+            assert status == 200 and head["content-type"] == "image/jpeg" and body == jpeg
             assert _request(app.app, cover + "&idle=image&size=64",
                             {"if-none-match": head["etag"]})[0] == 304
             assert _request(app.app, cover + "&idle=maybe")[0] == 400
@@ -1854,7 +1865,7 @@ def check_display():
             # A cover that cannot be fetched is the idle answer, and is not
             # asked for again at once.
             room.last_match["art_url"] = "https://example.com/broken.jpg"
-            assert _request(app.app, cover + "&idle=image")[1]["content-type"] == "image/png"
+            assert _request(app.app, cover + "&idle=image")[1]["content-type"] == "image/jpeg"
             tries = len(fetched)
             assert _request(app.app, cover)[0] == 204
             assert len(fetched) == tries, "a failure waits RETRY_SECONDS"
