@@ -1,5 +1,17 @@
 # Troubleshooting
 
+Start from what the room shows:
+
+```mermaid
+flowchart LR
+  start(["No match"]) --> what{"What does<br/>the room show?"}
+  what -->|"level near -91 dB"| silent["Silent device:<br/>pick another<br/>AUDIO_DEVICE"]
+  what -->|"level near -20 dB"| poor["Sound too poor:<br/>raise the volume,<br/>move the mic closer,<br/>or use a line input"]
+  what -->|"asks Shazam<br/>in the run-out groove"| quiet["Set QUIET_DBFS=-50,<br/>or a value from floor_db"]
+  what -->|"HTTP 429"| limit["Rate-limited:<br/>increase<br/>MATCH_INTERVAL"]
+  what -->|"camera error"| cam["Turn the audio on,<br/>choose AAC,<br/>16 kHz or more,<br/>use a restream"]
+```
+
 **Every cycle returns no match.** Read the room's level on the Rooms tab.
 The browser microphone has its own live meter.
 
