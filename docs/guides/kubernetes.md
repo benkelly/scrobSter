@@ -118,8 +118,19 @@ Then name it with `existingSecret`. `secretEnv` is ignored once
 - `API_TOKEN` is optional, and acts as the owner. Leave it out unless a script
   needs it. Each user also has a personal token.
 
-The chart does not restart the pod when a Secret of your own changes. Run
+The chart does not restart the pod when a Secret of your own changes, because
+it never reads that Secret. Run
 `kubectl --namespace music rollout restart deploy/scrobster` after you edit it.
+With a values file kept in version control, changing any pod annotation does
+the same on the next `helm upgrade`, for example:
+
+```yaml
+podAnnotations:
+  # Bump after editing scrobster-secrets.
+  secret-version: "2"
+```
+
+A change to `secretEnv` restarts the pod by itself.
 
 ## 5. Install, with cameras only
 
@@ -169,10 +180,15 @@ kubectl --namespace music port-forward svc/scrobster 8000:8000
 
 Then open http://localhost:8000 and sign in as `admin`.
 
-A fresh database starts with one microphone room, **Server mic**. With no sound
-card it fails, logs that once, and retries quietly. On the **Rooms** tab, turn
-it off or delete it. Then add each camera with its RTSP or RTSPS address, and
-use **Test level**. See [Rooms and cameras](../rooms.md) for camera tips.
+With `hostSound` off, a new database starts with no rooms. The chart sets
+`CREATE_SERVER_MIC_ROOM=0`, so there is no **Server mic** room failing for want
+of a sound card. On the **Rooms** tab, add each camera with its RTSP or RTSPS
+address, and use **Test level**. See [Rooms and cameras](../rooms.md) for
+camera tips.
+
+`createServerMicRoom: true` or `false` overrides that choice. It only acts when
+the database is made: an install from before this setting keeps its **Server
+mic** room, so turn that off or delete it on the **Rooms** tab.
 
 The pod must reach the cameras. A pod network usually reaches the home
 network through the node. A NetworkPolicy that limits egress has to allow the
@@ -239,9 +255,10 @@ mic*.
   issues a certificate without opening a port to the internet. A Tailscale
   operator or a private CA also works, as long as the phone trusts the
   certificate.
-- **The chart sets `TRUST_INGRESS=0`.** Do not set it again in `env`. A pod
-  can hold the address Home Assistant's ingress uses, and the app would sign
-  that pod in as the owner. See [SECURITY.md](../../SECURITY.md).
+- **The chart sets `TRUST_INGRESS=0`.** Setting it in `env` or `secretEnv`
+  stops the install with an error. A pod can hold the address Home Assistant's
+  ingress uses, and the app would sign that pod in as the owner. See
+  [SECURITY.md](../../SECURITY.md).
 
 Without an Ingress, `service.type: LoadBalancer` or `NodePort` also publishes
 the page, but over plain HTTP, so phones cannot use their microphone.
@@ -252,17 +269,18 @@ Use this when a USB turntable or a microphone is plugged into one node, for
 example a Raspberry Pi next to the hi-fi. See
 [Rooms and cameras](../rooms.md) for which input to use.
 
-On that node, find the card and the group that owns `/dev/snd`:
+On that node, find the card and the group ID that owns `/dev/snd`:
 
 ```sh
 arecord -l
 # card 1: CODEC [USB Audio CODEC], device 0: USB Audio [USB Audio]
-ls -ln /dev/snd
-# crw-rw---- 1 0 29 116, 2 ... controlC1
+stat -c %g /dev/snd/controlC0
+# 29
 ```
 
-The fourth column is the group, here 29, the `audio` group on Debian and
-Raspberry Pi OS. Other systems can use another number.
+That is the `audio` group on the node, 29 on Debian and Raspberry Pi OS.
+Other systems can use another number. It is the node's number that counts, not
+a group in the image: the pod gets it as a supplemental group.
 
 Label the node, so the pod can be pinned to it:
 
@@ -275,7 +293,7 @@ Add this to `values.yaml`:
 ```yaml
 hostSound:
   enabled: true
-  # The group that owns /dev/snd on the node, from ls -ln.
+  # The group ID that owns /dev/snd on the node, from stat -c %g.
   audioGroup: 29
 
 nodeSelector:
@@ -288,7 +306,9 @@ env:
 
 Then apply it with `helm upgrade` as in [step 9](#9-upgrade). On the
 **Rooms** tab, edit **Server mic**, or add a microphone room, pick the card,
-and use **Test level** while a record plays. Near -20 dB is typical for a
+and use **Test level** while a record plays. A new install with `hostSound` on
+starts with **Server mic**. One that began with cameras only has no such room,
+so add a microphone room. Near -20 dB is typical for a
 turntable. Near -91 dB means the wrong card.
 
 What `hostSound.enabled` changes:
@@ -296,6 +316,7 @@ What `hostSound.enabled` changes:
 - It mounts the node's `/dev/snd` into the container.
 - It adds `audioGroup` to the pod's groups, so the scrobster user may open the
   card. The process still runs as uid 1000.
+- It makes a new database start with the **Server mic** room.
 - It makes the container **privileged**, which replaces `securityContext`.
   Kubernetes has no way to hand one host device to a container without that,
   short of a device plugin.

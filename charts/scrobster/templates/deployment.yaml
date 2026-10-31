@@ -1,3 +1,16 @@
+{{- range $key := list "TRUST_INGRESS" "CREATE_SERVER_MIC_ROOM" }}
+{{- if or (hasKey $.Values.env $key) (hasKey $.Values.secretEnv $key) }}
+{{- if eq $key "TRUST_INGRESS" }}
+{{- fail "TRUST_INGRESS is set by the chart to 0 and cannot be set in env or secretEnv: a pod can hold Home Assistant's ingress address, and the app would sign its requests in as the owner." }}
+{{- else }}
+{{- fail (printf "%s is set by the chart; use the createServerMicRoom value instead of env or secretEnv." $key) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $serverMic := .Values.hostSound.enabled }}
+{{- if kindIs "bool" .Values.createServerMicRoom }}
+{{- $serverMic = .Values.createServerMicRoom }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -57,14 +70,18 @@ spec:
               value: "8000"
             - name: DB_PATH
               value: /data/scrobster.db
-            # Home Assistant's ingress address can be a pod address here, and
-            # the app would sign its requests in as the owner.
-            - name: TRUST_INGRESS
-              value: "0"
             {{- range $key, $value := .Values.env }}
             - name: {{ $key }}
               value: {{ $value | toString | quote }}
             {{- end }}
+            # Home Assistant's ingress address can be a pod address here, and
+            # the app would sign its requests in as the owner. Listed after
+            # env, and refused there, so nothing in the values replaces it.
+            - name: TRUST_INGRESS
+              value: "0"
+            # Read once, when the database is made.
+            - name: CREATE_SERVER_MIC_ROOM
+              value: {{ ternary "1" "0" $serverMic | quote }}
           {{- if or .Values.existingSecret .Values.secretEnv }}
           envFrom:
             - secretRef:

@@ -52,6 +52,21 @@ jobs:
           done
           ! helm template ci charts/scrobster \
             --set-string hostSound.enabled=yes > /dev/null || exit 1
+          # env and secretEnv must not be able to replace TRUST_INGRESS.
+          for where in env secretEnv; do
+            ! helm template ci charts/scrobster \
+              --set-string "${where}.TRUST_INGRESS=1" > /dev/null || exit 1
+          done
+          # With no sound card, a new database starts with no Server mic room.
+          grep -A1 'name: CREATE_SERVER_MIC_ROOM' /tmp/chart.yaml | grep -q 'value: "0"'
+          helm template ci charts/scrobster --set hostSound.enabled=true \
+            | grep -A1 'name: CREATE_SERVER_MIC_ROOM' | grep -q 'value: "1"'
+          # A chart installed from a checkout pulls the image tagged
+          # appVersion, so both numbers in Chart.yaml must follow __version__.
+          version="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' scrobster/__init__.py)"
+          grep -qx "version: ${version}" charts/scrobster/Chart.yaml \
+            && grep -qx "appVersion: \"${version}\"" charts/scrobster/Chart.yaml \
+            || { echo "Chart.yaml version and appVersion must be ${version}" >&2; exit 1; }
 
   docker:
     needs: [test, chart]

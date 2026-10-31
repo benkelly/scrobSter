@@ -69,8 +69,16 @@
       "additionalProperties": false,
       "properties": {
         "enabled": { "description": "Mount /dev/snd in a privileged container.", "type": "boolean" },
-        "audioGroup": { "description": "The audio group that may open /dev/snd.", "type": "integer", "minimum": 0 }
+        "audioGroup": {
+          "description": "The group ID that owns /dev/snd on the node (stat -c %g /dev/snd/controlC0); 29 on Debian and Raspberry Pi OS.",
+          "type": "integer",
+          "minimum": 0
+        }
       }
+    },
+    "createServerMicRoom": {
+      "description": "Whether a new database starts with the Server mic room; null follows hostSound.enabled. Sets CREATE_SERVER_MIC_ROOM.",
+      "type": ["boolean", "null"]
     },
     "service": {
       "description": "The Service in front of the pod.",
