@@ -9,3 +9,5 @@ pylast==7.2.0
 aiohttp==3.14.5
 aiomqtt==2.5.1
 paho-mqtt==2.1.0
+# Python 3.13 removed audioop, which pydub (under shazamio) imports.
+audioop-lts==0.2.2; python_version >= "3.13"
