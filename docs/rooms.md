@@ -249,8 +249,13 @@ another room.
 The browser asks for raw audio, because echo cancellation, noise suppression,
 and automatic gain control remove the detail that Shazam needs.
 
-The tab must stay open and awake. A phone stops recording when the screen
-sleeps.
+The tab must stay open and in front. While the microphone is on, the page asks
+the browser to keep the screen on, where the browser can. A phone stops
+recording when the screen sleeps. When a call or another app takes the
+microphone, the page opens it again once the page is back in front.
+
+As a room does, the server skips a clip that is silent, or below `QUIET_DBFS`
+when that is set, without asking Shazam.
 
 Browsers permit microphone access only in a secure context. `http://localhost`
 works. A plain `http://` address on your network does not. To use a phone, put

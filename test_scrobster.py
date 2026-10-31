@@ -264,6 +264,8 @@ def main():
     check_outage()
     check_quiet()
     check_display()
+    check_browser_clip()
+    check_install()
     print("ok")
 
 
@@ -1617,9 +1619,10 @@ def check_quiet():
     assert not any(quiet_off)
 
 
-def _request(asgi_app, path, headers=None, method="GET"):
+def _request(asgi_app, path, headers=None, method="GET", body=b""):
     """One request straight into the ASGI app, with no server and no HTTP
     client. Returns (status, {header: value}, body)."""
+    sending = body
     import asyncio
     from urllib.parse import urlsplit
     url = urlsplit(path)
@@ -1634,7 +1637,7 @@ def _request(asgi_app, path, headers=None, method="GET"):
         # The body once, then the client goes, which ends an event stream.
         asked.append(1)
         if len(asked) == 1:
-            return {"type": "http.request", "body": b"", "more_body": False}
+            return {"type": "http.request", "body": sending, "more_body": False}
         await asyncio.sleep(0.05)
         return {"type": "http.disconnect"}
 
@@ -1842,6 +1845,115 @@ def check_display():
         raise AssertionError("a display needs a name")
     except ValueError:
         pass
+
+
+def check_browser_clip():
+    """A clip from a phone is checked for silence as a room's is, so it does
+    not spend the shared Shazam limit. What it hears still matches, and a
+    rate limit says how long to wait."""
+    from scrobster import accounts, app, config, db, listener as listener_mod
+
+    asked, decoded = [], {}
+
+    async def fake_decode(data):
+        return decoded[data]
+
+    async def fake_recognize(wav):
+        asked.append(wav)
+        if wav == decoded[b"busy"]:
+            raise listener_mod.RateLimited("Shazam is limiting requests")
+        return {"matches": [{"offset": 30}],
+                "track": {"key": "k9", "title": "Song", "subtitle": "Band"}}
+
+    async def no_side_effects(*args, **kwargs):
+        return None
+
+    with tempfile.TemporaryDirectory() as d:
+        saved = (config.DB_PATH, config.QUIET_DBFS, app.decode_to_wav,
+                 app.listener._shazam.recognize, app.listener._on_match,
+                 app.listener._blocked_until, app.listener._backoff)
+        config.DB_PATH = os.path.join(d, "clip.db")
+        config.RECOGNITION_GAP_SECONDS, gap = 0, config.RECOGNITION_GAP_SECONDS
+        app.decode_to_wav = fake_decode
+        app.listener._shazam.recognize = fake_recognize
+        app.listener._on_match = no_side_effects
+        try:
+            db.init()
+            owner = accounts.create_user("phone", "password123", is_admin=True)
+            auth = {"authorization": f"Bearer {owner['api_token']}"}
+            decoded.update({b"silent": _wav(0), b"faint": _wav(5), b"music": _tone(8000),
+                            b"vinyl": _vinyl(), b"busy": _tone(8001)})
+
+            def post(clip):
+                status, head, body = _request(app.app, "/api/match", auth, "POST", clip)
+                return status, head, json.loads(body)
+
+            assert _request(app.app, "/api/match", method="POST", body=b"music")[0] == 401
+
+            # Silence: answered at once, and Shazam is not asked.
+            for clip in (b"silent", b"faint"):
+                status, _, j = post(clip)
+                assert status == 200, (status, j)
+                assert j["match"] is None and j["skipped"] == "silent", j
+                assert j["level_db"] < listener_mod.SILENT_DBFS, j
+            assert asked == [], "silence costs no request"
+
+            # A record's run-out groove is quiet only once QUIET_DBFS is set.
+            config.QUIET_DBFS = None
+            status, _, j = post(b"vinyl")
+            assert status == 200 and j["skipped"] is None and len(asked) == 1, j
+            config.QUIET_DBFS = -50
+            status, _, j = post(b"vinyl")
+            assert j["skipped"] == "quiet" and j["match"] is None and len(asked) == 1, j
+            assert j["floor_db"] < -50, j
+
+            # Music is asked about, and the answer has the shape the page reads.
+            status, _, j = post(b"music")
+            assert status == 200 and len(asked) == 2, (status, j)
+            assert j["match"]["title"] == "Song" and j["skipped"] is None, j
+            assert set(j) == {"match", "level_db", "floor_db", "skipped"}, j
+
+            # A rate limit is a 429 that says when to try again.
+            status, head, j = post(b"busy")
+            assert status == 429, (status, j)
+            assert int(head["retry-after"]) >= 1, head
+            assert "trying again in" in j["detail"], j
+            # ...and while it lasts, a silent clip still answers without asking.
+            assert post(b"silent")[2]["skipped"] == "silent"
+            assert post(b"music")[0] == 429 and len(asked) == 3, "blocked, not asked"
+        finally:
+            (config.DB_PATH, config.QUIET_DBFS, app.decode_to_wav,
+             app.listener._shazam.recognize, app.listener._on_match,
+             app.listener._blocked_until, app.listener._backoff) = saved
+            config.RECOGNITION_GAP_SECONDS = gap
+
+
+def check_install():
+    """The page can be added to a home screen: a manifest with relative URLs,
+    an icon that exists, and the microphone script, served without signing in."""
+    from scrobster import app
+
+    status, head, body = _request(app.app, "/manifest.webmanifest")
+    assert status == 200 and head["content-type"].startswith("application/manifest+json")
+    manifest = json.loads(body)
+    assert manifest["display"] == "standalone" and manifest["short_name"] == "scrobSter"
+    assert manifest["start_url"] == "." and manifest["scope"] == ".", \
+        "relative, so it works behind a proxy's path"
+    assert manifest["theme_color"] == manifest["background_color"] == "#0f1216", \
+        "the page's own background"
+    for icon in manifest["icons"]:
+        assert not icon["src"].startswith(("/", "http")), icon
+        status, head, png = _request(app.app, "/" + icon["src"])
+        assert status == 200 and png.startswith(b"\x89PNG"), icon
+        assert icon["sizes"] == "x".join(map(str, struct.unpack(">II", png[16:24]))), icon
+
+    status, head, body = _request(app.app, "/mic.js")
+    assert status == 200 and head["content-type"].startswith("text/javascript")
+    assert b"ScrobsterMic" in body and b"wakeLock" in body
+    page = _request(app.app, "/")[2].decode()
+    assert 'rel="manifest" href="manifest.webmanifest"' in page
+    assert '<script src="mic.js">' in page
+    assert 'href="manifest.webmanifest"' in _request(app.app, "/login")[2].decode()
 
 
 if __name__ == "__main__":
