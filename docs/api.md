@@ -59,7 +59,8 @@ For a sensor per room, such as "what is playing in the kitchen", use this
 ## Displays
 
 A screen by the hi-fi reads these with a display token, made under Settings,
-Displays. The token reads these routes and nothing else. Send it as
+Displays. [A display by the hi-fi](displays.md) has a recipe for a tablet, a
+Raspberry Pi, a Home Assistant dashboard and ESPHome. The token reads these routes and nothing else. Send it as
 `Authorization: Bearer <token>`, or as `?token=<token>` for a client that cannot
 set a header. Only a display token is read from the URL, never a personal one.
 
@@ -85,5 +86,6 @@ token gets `403` there. `POST /api/displays` takes `{name, room_id, listen}`;
 A room plays from its match until `NOW_PLAYING_STOP_SECONDS` pass without
 another, its last clip is silence or below `QUIET_DBFS`, or it stops listening.
 While nothing plays, or the song has no cover, `idle` chooses what the cover
-route answers: `204` (the default), `404`, or `image`, a black PNG of `size`
-pixels, 400 without one.
+route answers: `204` (the default), `404`, or `image`, a black JPEG of `size`
+pixels, 400 without one. Shazam's covers are JPEGs too, so a client that
+decodes one format, such as ESPHome, shows both.

@@ -645,8 +645,8 @@ async def _cover_response(request, room, size, idle) -> Response:
     if found:
         return _image(request, *found)
     if idle == "image":
-        return _image(request, "image/png", display.idle_png(size or 400),
-                      f'"idle-{size or 400}"')
+        return _image(request, "image/jpeg", display.idle_jpeg(size or 400),
+                      f'"idle-jpeg-{size or 400}"')
     if idle == "404":
         raise HTTPException(404, "nothing is playing", headers=_NO_STORE)
     return Response(status_code=204, headers=_NO_STORE)

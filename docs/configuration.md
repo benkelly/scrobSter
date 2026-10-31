@@ -34,7 +34,8 @@ The token can read what the rooms play, and nothing else: no history, no
 accounts, no settings, no camera URLs. It still goes in a URL, so revoke it in
 the same list when a screen goes away. Only its hash is kept, so a lost one
 cannot be shown again: make a new one. [The API](api.md#displays) lists every
-option.
+option, and [A display by the hi-fi](displays.md) has a recipe for each kind
+of screen.
 
 For a browser room, the form also offers **Use this browser as the room's
 microphone**. The link then ends in `&listen=1`, and its token is a room
