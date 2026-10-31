@@ -54,7 +54,7 @@ not change under you. The releases are listed on
 [Artifact Hub](https://artifacthub.io/packages/search?repo=scrobster).
 
 ```sh
-VERSION=0.6.2
+VERSION=0.7.0
 helm show values oci://ghcr.io/benkelly/charts/scrobster --version "$VERSION"
 ```
 
@@ -77,7 +77,7 @@ that Helm prints:
 
 ```sh
 helm pull oci://ghcr.io/benkelly/charts/scrobster --version "$VERSION"
-# Pulled: ghcr.io/benkelly/charts/scrobster:0.6.2
+# Pulled: ghcr.io/benkelly/charts/scrobster:0.7.0
 # Digest: sha256:...
 ```
 
