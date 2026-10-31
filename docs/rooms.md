@@ -18,6 +18,24 @@ they want. A room scrobbles for nobody until then, except for the
 administrator who added it. A song that two rooms hear at once is still one play for
 someone who receives both.
 
+A camera reaches its room directly, or through a restream:
+
+```mermaid
+flowchart LR
+  subgraph net["Your network"]
+    cam(["IP camera<br/>audio on<br/>AAC, 16 kHz or more"])
+    rs["go2rtc or Frigate restream<br/>rtsp://host:8554/camera"]
+    unifi["UniFi Protect<br/>rtsps://host:7441/..."]
+  end
+  subgraph server["Server"]
+    room["scrobSter stream room<br/>RTSP over TCP, audio only"]
+  end
+  cam -->|"optional"| rs
+  rs --> room
+  cam -->|"direct"| room
+  unifi --> room
+```
+
 Tips for cameras:
 
 - **Turn the audio on**, in the camera and in the stream you use. A camera's
@@ -39,6 +57,15 @@ Tips for cameras:
   over HTTP or RTSP and be added as a stream. Send 16 kHz or more, for the
   reason above.
 
+A home-made stream looks like this:
+
+```mermaid
+flowchart LR
+  out(["Line out"]) -->|"analogue"| adc(["ADC"])
+  adc -->|"digital"| mcu(["Microcontroller<br/>for example an ESP32"])
+  mcu -->|"HTTP or RTSP<br/>16 kHz or more"| room["scrobSter stream room"]
+```
+
 **A turntable with a USB output** is the best input for vinyl. It sends the
 record as digital audio, with no microphone or room noise in between. Plug it
 into the server and it appears as a sound card:
@@ -54,6 +81,44 @@ fixed level, so near -20 dB is typical, and anything near -91 dB means the
 wrong card, or the turntable is set to its Bluetooth output. Card numbers can
 change between boots when more than one USB audio device is connected. To
 pin it, use the card's name instead, for example `hw:CARD=CODEC,DEV=0`.
+
+The turntable is a sound card on the server, so no other hardware sits in between:
+
+```mermaid
+flowchart LR
+  subgraph hifi["Hi-fi"]
+    tt(["USB turntable<br/>built-in preamp<br/>and USB codec"])
+  end
+  subgraph server["Server, for example a Raspberry Pi"]
+    alsa["ALSA card<br/>hw:CARD=CODEC,DEV=0"]
+    room["scrobSter microphone room"]
+  end
+  tt -->|"USB cable"| alsa
+  alsa --> room
+```
+
+A turntable or hi-fi without USB needs a USB audio interface, or a line input, at line level:
+
+```mermaid
+flowchart LR
+  subgraph hifi["Hi-fi"]
+    bare(["Turntable<br/>no built-in preamp"])
+    pre(["Phono preamp, RIAA"])
+    built(["Turntable with<br/>built-in preamp<br/>switch on LINE"])
+    amp(["Amplifier<br/>tape out or line out"])
+  end
+  subgraph server["Server"]
+    iface(["USB audio interface<br/>or line in"])
+    room["scrobSter microphone room"]
+  end
+  bare -->|"phono level<br/>and ground wire"| pre
+  pre -->|"line level, RCA"| iface
+  built -->|"line level, RCA"| iface
+  amp -->|"line level, RCA"| iface
+  iface --> room
+```
+
+Never plug a turntable without a preamp straight into a line input: its signal is far too quiet, and its bass is not corrected.
 
 **A camera that goes offline is logged once.** The first failure logs a
 warning with the reason, then the room retries quietly, more gently each time
@@ -136,6 +201,19 @@ Index 0 is not always the microphone. On a Mac with virtual audio software, inde
 device with ffmpeg. It runs headless, needs no browser, and survives a closed
 tab. Use this for an always-on machine.
 
+The microphone hears the speakers, and ffmpeg records it on the server:
+
+```mermaid
+flowchart LR
+  spk(["Speakers"]) -.->|"sound in the room"| mic(["Microphone<br/>or USB microphone"])
+  subgraph server["Server"]
+    ff["ffmpeg<br/>AUDIO_DEVICE"]
+    room["scrobSter microphone room"]
+  end
+  mic --> ff
+  ff --> room
+```
+
 **Browser microphone (optional).** Open the page and select *use this device's
 mic*. Once the browser has permission, a menu next to the button lets you pick
 which microphone, and the page remembers it. A live meter under the buttons
@@ -155,3 +233,11 @@ sleeps.
 Browsers permit microphone access only in a secure context. `http://localhost`
 works. A plain `http://` address on your network does not. To use a phone, put
 the app behind HTTPS, for example with a reverse proxy or Tailscale.
+
+A phone reaches the server like this:
+
+```mermaid
+flowchart LR
+  phone(["Phone or laptop browser"]) -->|"12-second clips<br/>over HTTPS"| proxy["Reverse proxy or Tailscale"]
+  proxy -->|"POST /api/match"| app["scrobSter"]
+```
