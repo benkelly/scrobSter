@@ -9,7 +9,7 @@ nameOverride: ""
 fullnameOverride: ""
 
 # Plain settings, passed as environment variables. Every variable in the
-# README's configuration table works here, for example:
+# configuration table in docs/configuration.md works here, for example:
 #   MATCH_INTERVAL: "20"
 #   RECOGNITION_GAP_SECONDS: "5"
 #   LISTEN_ON_START: "0"

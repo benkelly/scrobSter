@@ -1,0 +1,16 @@
+# Documentation
+
+Start with the [README](../README.md): what scrobSter does, the requirements and
+the Quick start.
+
+- **[Install](install.md)**: Docker, a systemd service and Kubernetes (Helm).
+- **[Rooms and cameras](rooms.md)**: rooms, cameras, USB turntables, finding
+  your audio device and the two ways to listen.
+- **[Accounts and configuration](configuration.md)**: accounts, every
+  environment variable, connecting Last.fm, and cover art.
+- **[Home Assistant](home-assistant.md)**: the add-on and devices over MQTT.
+- **[API](api.md)**: every route, and a REST sensor for Home Assistant.
+- **[Troubleshooting](troubleshooting.md)**: what to check when nothing
+  matches, and the measured recognition limits.
+- **[Releasing](releasing.md)**: for maintainers, how a version is published and
+  verified.
