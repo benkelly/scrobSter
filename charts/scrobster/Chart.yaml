@@ -2,10 +2,13 @@ apiVersion: v2
 name: scrobster
 description: Listens to a microphone or a camera, identifies the music with Shazam, and scrobbles it to Last.fm, Libre.fm, ListenBrainz or Maloja.
 type: application
-# CI packages the chart with __version__ from scrobster/__init__.py for both
-# numbers, so these only matter for a chart installed from a checkout.
-version: 0.4.0
-appVersion: "0.4.0"
+# CI publishes the chart with `helm package --version --app-version` set to
+# __version__ from scrobster/__init__.py, so the published chart always
+# matches the image. These two numbers matter for a chart installed from a
+# checkout, whose image tag defaults to appVersion: keep both equal to
+# __version__. CI fails when they differ.
+version: 0.6.2
+appVersion: "0.6.2"
 icon: https://raw.githubusercontent.com/benkelly/scrobSter/main/scrobster/static/icon.png
 home: https://github.com/benkelly/scrobSter
 sources:

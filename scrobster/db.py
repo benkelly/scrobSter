@@ -155,17 +155,20 @@ def adopt_legacy_history(user_id) -> int:
     return moved
 
 
-def _add_rooms(c):
+def _add_rooms(c, fresh=False):
     """Turn the single microphone of schema 2 into the first room.
 
-    A fresh database gets the same room, so a new install listens as before. The
-    device chosen in Settings moves into the room, and so does each user's
-    choice to receive the microphone.
+    A fresh database gets the same room, so a new install listens as before,
+    unless CREATE_SERVER_MIC_ROOM is off. An older database always gets it,
+    because it already had a microphone. The device chosen in Settings moves
+    into the room, and so does each user's choice to receive the microphone.
     """
     columns = {r["name"] for r in c.execute("PRAGMA table_info(matches)")}
     if "room" not in columns:
         c.execute("ALTER TABLE matches ADD COLUMN room TEXT")
     if c.execute("SELECT COUNT(*) FROM rooms").fetchone()[0]:
+        return
+    if fresh and not config.CREATE_SERVER_MIC_ROOM:
         return
     saved = {r["key"]: r["value"] for r in c.execute(
         "SELECT key, value FROM settings WHERE key IN ('audio_backend', 'audio_device')")}
@@ -201,13 +204,14 @@ def init():
     with conn as c:
         version = c.execute("PRAGMA user_version").fetchone()[0]
         old = version == 0 and _table_exists(c, "matches") and not _table_exists(c, "users")
+        fresh = version == 0 and not _table_exists(c, "matches")
         if old:
             # Park the old rows. adopt_legacy_history() moves them once the
             # owner account exists.
             c.execute("ALTER TABLE matches RENAME TO matches_v1")
         _create_schema(c)
         if version < 3:
-            _add_rooms(c)
+            _add_rooms(c, fresh)
         c.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.close()
 

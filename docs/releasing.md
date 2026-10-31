@@ -3,7 +3,8 @@
 The version lives in one place, `__version__` in `scrobster/__init__.py`, and
 `GET /api/status` reports it.
 
-To cut a release, bump that number in the pull request. When it merges, CI
+To cut a release, bump that number in the pull request, and `version` and
+`appVersion` in `charts/scrobster/Chart.yaml` with it (see below). When it merges, CI
 publishes the image as `ghcr.io/benkelly/scrobster:<version>`, moves the
 matching `x.y` tag, pushes the git tag `v<version>` and opens a GitHub release
 with generated notes. A merge that does not change the number publishes only
@@ -36,6 +37,12 @@ docker buildx imagetools inspect ghcr.io/benkelly/scrobster:<version> \
 docker buildx imagetools inspect ghcr.io/benkelly/scrobster:<version> \
   --format '{{ json .Provenance }}'
 ```
+
+A release also sets `version` and `appVersion` in
+[`charts/scrobster/Chart.yaml`](../charts/scrobster/Chart.yaml) to the new
+`__version__`, in the same commit. CI publishes the chart with both numbers
+taken from `__version__` anyway, but a chart installed from a checkout pulls
+the image tagged `appVersion`, and the chart job fails when they differ.
 
 The Home Assistant add-on pins the exact version, so bump
 [ha-addons](https://github.com/benkelly/ha-addons) after the release, never
