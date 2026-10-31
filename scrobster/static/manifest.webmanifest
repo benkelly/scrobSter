@@ -1,0 +1,14 @@
+{
+  "name": "scrobSter",
+  "short_name": "scrobSter",
+  "description": "Hears what plays, and scrobbles it.",
+  "id": ".",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "background_color": "#0f1216",
+  "theme_color": "#0f1216",
+  "icons": [
+    {"src": "icon.png", "sizes": "200x200", "type": "image/png", "purpose": "any"}
+  ]
+}

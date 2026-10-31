@@ -60,7 +60,7 @@ A service is enabled when all of its variables are set.
 | `SKIP_KNOWN_SECONDS` | `60` | while a room hears a song it matched twice, skip Shazam for up to this long, or until the song should end. `0` asks every cycle |
 | `RESCROBBLE_MINUTES` | `30` | fallback cooldown, used only when a match has no offset |
 | `NOW_PLAYING_STOP_SECONDS` | `180` | clear the playing-now mark after this long with no match |
-| `QUIET_DBFS` | unset | a clip whose floor, its median level with clicks and pops ignored, is below this counts as silence. For a turntable, try `-50`. Unset, only a peak below -70 dBFS is silence. See [Troubleshooting](troubleshooting.md#troubleshooting) |
+| `QUIET_DBFS` | unset | a clip whose floor, its median level with clicks and pops ignored, is below this counts as silence. For a turntable, try `-50`. Unset, only a peak below -70 dBFS is silence. Clips from a browser microphone are checked the same way. See [Troubleshooting](troubleshooting.md#troubleshooting) |
 | `DB_PATH` | `scrobster.db` | SQLite history file |
 | `PORT` | `8000` | web/API port |
 | `ADMIN_USERNAME` | `admin` | name of the account made on the first start |

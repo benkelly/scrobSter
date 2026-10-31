@@ -24,7 +24,8 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from . import accounts, config, db, display, events, mqtt, rooms, scrobble
 from . import __version__
 from .listener import (REQUEST_WINDOW_SECONDS, SILENT_DBFS, Listener, RateLimited,
-                       decode_to_wav, list_devices, peak_dbfs, probe_level)
+                       decode_to_wav, floor_dbfs, is_quiet, list_devices, peak_dbfs,
+                       probe_level)
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 # /api/events sends a comment this often, so proxies keep the stream open.
@@ -454,14 +455,23 @@ async def match(request: Request, user: dict = Depends(require_user)):
         wav = await decode_to_wav(data)
     except ValueError as e:
         raise HTTPException(415, str(e))
+    level, floor = peak_dbfs(wav), floor_dbfs(wav)
+    # As a room does: nothing audible is not worth a request, and the limit is
+    # shared with every room and every other phone.
+    skipped = ("silent" if level < SILENT_DBFS
+               else "quiet" if is_quiet(floor, config.QUIET_DBFS) else None)
+    if skipped:
+        return {"match": None, "level_db": level, "floor_db": floor, "skipped": skipped}
     try:
         found = await listener.match_bytes(wav, source="browser", users=[user])
     except RateLimited as e:
-        raise HTTPException(429, str(e))
+        # The page waits this long instead of sending clips that would be refused.
+        wait = max(1, round(listener.rate_limited_for()))
+        raise HTTPException(429, str(e), headers={"retry-after": str(wait)})
     except Exception as e:
         log.warning("browser clip failed: %s", e)
         raise HTTPException(502, f"recognition failed: {str(e) or type(e).__name__}")
-    return {"match": found, "level_db": peak_dbfs(wav)}
+    return {"match": found, "level_db": level, "floor_db": floor, "skipped": None}
 
 
 # --- rooms ---------------------------------------------------------------------
@@ -790,6 +800,20 @@ async def stylesheet():
 @app.get("/icon.png")
 async def icon():
     return FileResponse(_static / "icon.png", media_type="image/png")
+
+
+@app.get("/mic.js")
+async def mic_script():
+    """The browser microphone, shared by the pages that listen."""
+    return FileResponse(_static / "mic.js", media_type="text/javascript")
+
+
+@app.get("/manifest.webmanifest")
+async def manifest():
+    """Lets a phone install the page from its home screen. Every URL in it is
+    relative, so it works under a reverse proxy's path too."""
+    return FileResponse(_static / "manifest.webmanifest",
+                        media_type="application/manifest+json")
 
 
 @app.get("/login")

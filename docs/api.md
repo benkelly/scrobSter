@@ -2,7 +2,10 @@
 
 Every route needs a signed-in session, a personal API token, or a request
 through Home Assistant ingress. The display routes below also take a display
-token.
+token. The pages and their files need none: `/`, `/login`, `/display`,
+`/app.css`, `/icon.png`, `/mic.js` (the browser microphone), and
+`/manifest.webmanifest`, which lets a phone add the page to its home screen as
+an app.
 
 | Endpoint | Purpose |
 |---|---|
@@ -11,7 +14,7 @@ token.
 | `GET /api/events` | what happens, as it happens, as [server-sent events](https://developer.mozilla.org/docs/Web/API/Server-sent_events). Each event is named by its kind: `match`, `scrobble`, `cleared`, `listening`, `rooms`, `member`, `users`, `services`, `rates`. You see what the rest of the API would show you. `resync` means events were lost, so read `/api/status` again |
 | `GET /api/levels` | `{room_id: dBFS}`: the live peak of each room that is listening, or `null` between two recordings |
 | `POST /api/listen` `{"on": true}` | start or stop listening in every room that is turned on. Administrator only |
-| `POST /api/match` (raw audio body) | identify one clip and scrobble it for the caller |
+| `POST /api/match` (raw audio body) | identify one clip and scrobble it for the caller. Answers `{match, level_db, floor_db, skipped}`: `match` is the track or `null`, `level_db` the clip's peak and `floor_db` its median level. `skipped` is `"silent"` when the peak is below -70 dBFS, `"quiet"` when the floor is below `QUIET_DBFS`, and `null` otherwise. A skipped clip does not ask Shazam. While Shazam limits requests, the answer is `429` with a `Retry-After` header in seconds |
 | `GET /api/recent?limit=50` | that user's scrobble history |
 | `GET /api/me` | account details, with the rooms that scrobble for you |
 | `GET /api/services`, `PUT/DELETE /api/services/{name}` | that user's service credentials |

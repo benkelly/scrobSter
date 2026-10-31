@@ -158,6 +158,9 @@ nav button:focus-visible { outline-offset: -2px; border-radius: 4px; }
 
 .note { margin: .75rem 0 0; font-size: .8rem; color: var(--muted); }
 .note:empty { display: none; }
+.note.ok { color: var(--ok); }
+.note.warn { color: var(--warn); }
+.note.err { color: var(--err); }
 
 #now { display: flex; gap: 1rem; align-items: center; min-height: 96px; }
 #now img { width: 72px; height: 72px; border-radius: 8px; flex: none; object-fit: cover;

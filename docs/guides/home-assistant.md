@@ -312,8 +312,9 @@ so the browser should treat it as secure over `https`. In the Companion app,
 the app itself also needs permission to use the microphone, in the phone's
 settings.
 
-Keep the tab open and the screen awake. A phone stops recording when the
-screen sleeps.
+Keep the tab open and in front. The page asks the browser to keep the screen
+on while the microphone is on, where the browser can. A phone stops recording
+when the screen sleeps. See [Keep the screen on](phone.md#step-4-keep-the-screen-on).
 
 ## Troubleshooting
 

@@ -7,6 +7,7 @@
 <title>scrobSter</title>
 <link rel="icon" href="icon.png" type="image/png">
 <link rel="apple-touch-icon" href="icon.png">
+<link rel="manifest" href="manifest.webmanifest" crossorigin="use-credentials">
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
@@ -219,6 +220,7 @@
 
 <div id="toasts" aria-live="polite" aria-atomic="false"></div>
 
+<script src="mic.js"></script>
 <script>
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
@@ -603,155 +605,134 @@ $("#toggle").onclick = () => busy($("#toggle"), async () => {
 });
 
 // --- browser microphone ---
-const CLIP_MS = 12000, GAP_MS = 3000;
-let micOn = false, micStream = null;
-const micNote = (t, kind = "") => { $("#micnote").textContent = t; $("#micnote").className = "note " + kind; };
-
-// Voice processing strips the detail Shazam fingerprints. Ask for raw audio,
-// from the microphone chosen last time when there is one.
-async function openMic() {
-  const raw = {echoCancellation: false, noiseSuppression: false, autoGainControl: false};
-  let wanted = null;
-  try { wanted = localStorage.getItem("micDeviceId"); } catch {}
-  if (wanted) {
-    try { return await navigator.mediaDevices.getUserMedia({audio: {...raw, deviceId: {exact: wanted}}}); }
-    catch { /* unplugged since, fall back to the default */ }
-  }
-  return navigator.mediaDevices.getUserMedia({audio: raw});
-}
-
-// Labels only exist once the browser has permission, so this runs after openMic.
-async function listMics() {
-  const sel = $("#micdev");
-  let devices = [];
-  try { devices = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "audioinput" && d.label); }
-  catch { return; }
-  const current = micStream?.getAudioTracks()[0]?.getSettings().deviceId;
-  sel.innerHTML = devices.map(d =>
-    `<option value="${esc(d.deviceId)}" ${d.deviceId === current ? "selected" : ""}>${esc(d.label)}</option>`).join("");
-  sel.classList.toggle("hidden", devices.length < 2);
-}
-$("#micdev").onchange = () => {
-  try { localStorage.setItem("micDeviceId", $("#micdev").value); } catch {}
-  if (micStream) {
-    // The loop opens the new microphone, and its meter, before the next clip.
-    stopMicMeter();
-    micStream.getTracks().forEach(t => t.stop());
-    micStream = null;
-  }
+// mic.js records the clips, keeps the screen awake and recovers the
+// microphone after a call. This part only paints what it says.
+let micOn = false, micWait = 0;
+const micNote = (t, kind = "", html = false) => {
+  clearInterval(micWait); micWait = 0;
+  const el = $("#micnote");
+  if (html) el.innerHTML = t; else el.textContent = t;
+  el.className = "note " + kind;
 };
-if (navigator.mediaDevices?.addEventListener) {
-  navigator.mediaDevices.addEventListener("devicechange", () => { if (micOn) listMics(); });
+
+// "trying again in 12 s", counting down, until the next note replaces it.
+function micCountdown(text, until, kind = "") {
+  const paint = () => {
+    const left = Math.max(0, Math.ceil((until - Date.now()) / 1000));
+    $("#micnote").textContent = `${text}, trying again in ${left} s.`;
+    if (!left) { clearInterval(micWait); micWait = 0; }
+  };
+  micNote("", kind);
+  paint();
+  micWait = setInterval(paint, 1000);
+}
+
+function micResult(j) {
+  if (j.match) {
+    micNote(`Matched ${j.match.artist} — ${j.match.title}`, "ok");
+  } else if (j.skipped === "silent") {
+    micNote(`Too quiet to identify (input ${j.level_db} dBFS), so Shazam was not asked.`
+            + " Move closer to the music, or pick another microphone.", "warn");
+  } else if (j.skipped === "quiet") {
+    micNote(`Too quiet to be music (floor ${j.floor_db} dBFS), so Shazam was not asked.`
+            + " Listening again…", "warn");
+  } else {
+    micNote(`No match (input ${j.level_db} dBFS). Listening again…`);
+  }
+  refresh();
+}
+
+function micError(e) {
+  const why = e.status === 413 ? "the clip is too large"
+    : e.status === 415 ? "the server could not decode the clip"
+    : e.detail || e.message;
+  return why;
 }
 
 // The clip loop only reports a level once a clip has been sent, which is too
-// late to aim a microphone. This taps the same stream and paints every frame,
-// so you can see the room while you move the phone.
-let micCtx = null, micNode = null, micSource = null, micRaf = 0;
-
-function startMicMeter(stream) {
-  stopMicMeter();
-  const Ctx = window.AudioContext || window.webkitAudioContext;
-  if (!Ctx || !stream.getAudioTracks().length) return;  // no meter, no harm
-  try {
-    micCtx = new Ctx();
-    micSource = micCtx.createMediaStreamSource(stream);
-    micNode = micCtx.createAnalyser();
-    micNode.fftSize = 1024;
-    // Not connected to the destination, so nothing is played back.
-    micSource.connect(micNode);
-  } catch { stopMicMeter(); return; }
-  // Started from the button press, but Safari can still hand back a suspended
-  // context.
-  micCtx.resume?.().catch(() => {});
-
+// late to aim a microphone. The meter paints every frame, so you can see the
+// room while you move the phone.
+let micLevel = SILENT_DB, micHold = SILENT_DB, micHoldAt = 0, micWroteAt = 0;
+function paintMicLevel(db, now) {
   const el = $("#micmeter"), fill = el.querySelector(".fill"),
         mark = el.querySelector(".peak"), out = $("#micdb");
-  const buf = new Float32Array(micNode.fftSize);
-  let level = SILENT_DB, hold = SILENT_DB, holdAt = 0, wroteAt = 0;
-  el.classList.remove("hidden");
-
-  const HOLD_MS = 1000;
-  const tick = now => {
-    if (!micNode) return;
-    // A reader that throws would otherwise leave the last bar on screen
-    // looking live, which is the one thing a meter must never do.
-    try { micNode.getFloatTimeDomainData(buf); }
-    catch { stopMicMeter(); return; }
-    let peak = 0;
-    for (const v of buf) { const a = Math.abs(v); if (a > peak) peak = a; }
-    const db = peak > 0 ? Math.max(SILENT_DB, 20 * Math.log10(peak)) : SILENT_DB;
-    // Rise at once, fall slowly: a beat registers, and the bar does not flicker
-    // between the frames inside one.
-    level = db > level ? db : Math.max(db, level - 0.6);
-    if (db >= hold || now - holdAt > HOLD_MS) { hold = db; holdAt = now; }
-
-    el.className = "meter live" + meterClass(level);
-    fill.style.width = meterPct(level).toFixed(1) + "%";
-    mark.style.left =
-      `clamp(0px, calc(${meterPct(hold).toFixed(1)}% - 1px), calc(100% - 2px))`;
-    // The number is for reading, not for animating.
-    if (now - wroteAt > 200) { out.textContent = level.toFixed(0); wroteAt = now; }
-    micRaf = requestAnimationFrame(tick);
-  };
-  micRaf = requestAnimationFrame(tick);
-}
-
-function stopMicMeter() {
-  if (micRaf) cancelAnimationFrame(micRaf);
-  micRaf = 0;
-  try { micSource?.disconnect(); } catch {}
-  try { micCtx?.close(); } catch {}
-  micCtx = micNode = micSource = null;
-  $("#micmeter").classList.add("hidden");
-  $("#micdb").textContent = "\u2014";
-}
-
-function recordClip(stream, ms) {
-  return new Promise((resolve, reject) => {
-    let rec; const chunks = [];
-    try { rec = new MediaRecorder(stream); } catch (e) { return reject(e); }
-    rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
-    rec.onerror = e => reject(e.error || new Error("recorder failed"));
-    rec.onstop = () => resolve(new Blob(chunks, {type: rec.mimeType}));
-    rec.start();
-    setTimeout(() => { if (rec.state !== "inactive") rec.stop(); }, ms);
-  });
-}
-
-async function micLoop() {
-  while (micOn) {
-    try {
-      if (!micStream) {
-        micStream = await openMic();
-        await listMics();
-        startMicMeter(micStream);
-      }
-    } catch (e) {
-      micOn = false; paintMic(); micNote("Microphone blocked: " + e.message, "err"); return;
-    }
-    const stream = micStream;
-    try {
-      const clip = await recordClip(stream, CLIP_MS);
-      if (!micOn) break;
-      if (stream !== micStream) continue;  // the microphone changed mid-clip
-      micNote("Identifying…");
-      const r = await fetch("api/match", {method: "POST", credentials: "same-origin",
-        headers: {"content-type": "application/octet-stream"}, body: clip});
-      if (!r.ok) throw new Error("HTTP " + r.status);
-      const j = await r.json();
-      micNote(j.match ? `Matched ${j.match.artist} — ${j.match.title}`
-                      : `No match (input ${j.level_db} dBFS). Listening again…`,
-              j.match ? "ok" : "");
-      refresh();
-    } catch (e) { micNote("Error: " + e.message, "err"); }
-    if (micOn) await new Promise(r => setTimeout(r, GAP_MS));
+  if (db == null) {
+    el.classList.add("hidden");
+    out.textContent = "—";
+    micLevel = micHold = SILENT_DB;
+    return;
   }
-  stopMicMeter();
-  micStream?.getTracks().forEach(t => t.stop());
-  micStream = null;
-  $("#micdev").classList.add("hidden");
+  el.classList.remove("hidden");
+  db = Math.max(SILENT_DB, db);
+  // Rise at once, fall slowly: a beat registers, and the bar does not flicker
+  // between the frames inside one.
+  micLevel = db > micLevel ? db : Math.max(db, micLevel - 0.6);
+  if (db >= micHold || now - micHoldAt > 1000) { micHold = db; micHoldAt = now; }
+  el.className = "meter live" + meterClass(micLevel);
+  fill.style.width = meterPct(micLevel).toFixed(1) + "%";
+  mark.style.left =
+    `clamp(0px, calc(${meterPct(micHold).toFixed(1)}% - 1px), calc(100% - 2px))`;
+  // The number is for reading, not for animating.
+  if (now - micWroteAt > 200) { out.textContent = micLevel.toFixed(0); micWroteAt = now; }
 }
+
+function paintMicDevices(devices, current) {
+  const sel = $("#micdev");
+  sel.innerHTML = devices.map(d =>
+    `<option value="${esc(d.deviceId)}" ${d.deviceId === current ? "selected" : ""}>${esc(d.label)}</option>`).join("");
+  sel.classList.toggle("hidden", !micOn || devices.length < 2);
+}
+
+let micAwake = null, micListening = false;
+function paintListening(recovered) {
+  const start = recovered ? "The microphone is back. Listening again…"
+                          : "Listening from this device. Keep this tab open, in front.";
+  // null: not known yet. false: the screen may sleep, so say how to stop that.
+  micNote(start + (micAwake === false
+    ? " This browser cannot keep the screen on: turn off auto-lock while you listen." : ""));
+}
+
+const mic = window.ScrobsterMic ? ScrobsterMic.create({
+  onClip: clip => ScrobsterMic.upload("api/match", clip).then(micResult),
+  onLevel: paintMicLevel,
+  onDevices: paintMicDevices,
+  onState(state, info) {
+    micListening = state === "listening";
+    switch (state) {
+      case "starting": micNote("Asking for the microphone…"); break;
+      case "listening": paintListening(info.recovered); break;
+      case "sending": micNote("Identifying…"); break;
+      case "interrupted":
+        micNote("The microphone was taken away, by a call or another app."
+          + " It comes back when it is free, with this page in front.", "warn");
+        break;
+      case "waiting":
+        if (info.reason === "busy") micCountdown("Shazam is busy", info.until, "warn");
+        else if (info.reason === "network") micCountdown("The server cannot be reached", info.until, "err");
+        else micCountdown(`The server could not identify the clip (${micError(info.error)})`, info.until, "err");
+        break;
+      case "error": micNote("Error: " + micError(info.error) + ". Trying the next clip.", "err"); break;
+      case "blocked":
+        micOn = false; paintMic();
+        micNote(info.error?.name === "NotFoundError" ? "No microphone found."
+          : "Microphone blocked: " + (info.error?.message || "permission refused"), "err");
+        refresh();
+        break;
+      case "signedout":
+        micOn = false; paintMic();
+        micNote(`Signed out — <a href="login">sign in again</a>, then start the microphone.`, "err", true);
+        refresh();
+        break;
+      case "wake":
+        // Only worth a word when the screen may sleep: see docs/guides/phone.md.
+        micAwake = info.held;
+        if (!info.held && !document.hidden && micListening) paintListening(false);
+        break;
+    }
+  },
+}) : null;
+
+$("#micdev").onchange = () => mic?.setDevice($("#micdev").value);
 
 function paintMic() {
   const b = $("#mic");
@@ -759,22 +740,19 @@ function paintMic() {
   b.classList.toggle("stop", micOn);
   b.classList.toggle("ghost", !micOn);
   b.setAttribute("aria-pressed", String(micOn));
+  if (!micOn) $("#micdev").classList.add("hidden");
 }
 
 $("#mic").onclick = () => {
-  if (!navigator.mediaDevices?.getUserMedia) {
+  if (!mic || !ScrobsterMic.supported()) {
     micNote("This browser only allows microphone access over https, or on localhost.", "err");
     return;
   }
   micOn = !micOn; paintMic();
-  if (micOn) {
-    micNote("Listening from this device. Keep this tab open and awake.");
-    refresh();
-    micLoop();
-  }
-  // Stop the meter now rather than when the clip in flight finishes, so the
+  if (micOn) { micAwake = null; mic.start(); refresh(); }
+  // The meter stops now rather than when the clip in flight finishes, so the
   // button and the bar agree.
-  else { stopMicMeter(); micNote(""); refresh(); }
+  else { mic.stop(); micNote(""); refresh(); }
 };
 
 // --- settings ---

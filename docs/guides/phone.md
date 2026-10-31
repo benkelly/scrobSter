@@ -120,15 +120,21 @@ Two things to know:
 Open the HTTPS address and sign in. The session lasts 30 days, so you sign in
 again about once a month on each browser.
 
-The page sets a home screen icon, so you can add it to the home screen:
+The page has a web app manifest, so you can add it to the home screen as an
+app:
 
 - **iPhone, Safari:** the Share button, then **Add to Home Screen**.
-- **Android, Chrome:** the menu, then **Add to Home screen**.
+- **Android, Chrome:** the menu, then **Add to Home screen**, or **Install
+  app**.
 
-This is a shortcut to the page. scrobSter has no web app manifest, so it is
-not installed as an app. On an iPhone, if the shortcut opens on its own,
-without Safari's address bar, it keeps its own sign-in: sign in once more
-there.
+It opens on its own, without the browser's address bar, with the scrobSter
+icon. Add it from the HTTPS address, not from inside Home Assistant: an
+ingress address changes, so the icon would stop working.
+
+On an iPhone, the home screen app keeps its own sign-in, apart from Safari's.
+Sign in once more inside it. That sign-in also lasts 30 days, and closing the
+app does not end it. Signing out in Safari does not sign out the app, and the
+other way round. On Android the app shares Chrome's sign-in.
 
 ## Step 3. Allow the microphone
 
@@ -158,18 +164,31 @@ microphone permission for itself: Settings > Apps > Chrome > Permissions.
 ## Step 4. Keep the screen on
 
 The page records only while its tab is open, in front, and the screen is on.
-A phone stops recording when the screen sleeps. The page does not keep the
-screen awake by itself: it does not use the Screen Wake Lock API. So change
-the phone's setting while you listen:
+A phone stops recording when the screen sleeps.
 
-- **iPhone:** Settings > Display & Brightness > Auto-Lock > **Never**. Low
-  Power Mode limits Auto-Lock to 30 seconds, so turn it off while you listen.
+While the microphone is on, the page asks the browser to keep the screen on,
+with the [Screen Wake Lock
+API](https://developer.mozilla.org/docs/Web/API/Screen_Wake_Lock_API). It asks
+again each time the page comes back to the front, and lets go when you stop
+the microphone. This needs HTTPS, and a browser that has it: Chrome on
+Android, and Safari from iOS 16.4. In a home screen app on an iPhone it works
+from iOS 18.4. When the browser cannot keep the screen on, the note under the
+meter says so. Then change the phone's setting while you listen:
+
+- **iPhone:** Settings > Display & Brightness > Auto-Lock > **Never**.
 - **Android:** Settings > Display > **Screen timeout**, set to the longest.
   The name differs between makers.
 
-Switching to another app, a call or Siri can take the microphone away. If the
-meter stops moving when you come back, select **Stop this device's mic**, then
-**Use this device's mic** again.
+Low Power Mode on an iPhone, and battery saver on some Android phones, can
+refuse to keep the screen on. Turn them off while you listen.
+
+Switching to another app, a call or Siri can take the microphone away. The
+note says *The microphone was taken away*. The clip being recorded is thrown
+away, and the page waits. When the microphone is free again and the page is
+in front, it opens the microphone again and goes on: the note says *The
+microphone is back*. It does not ask for the microphone while the page is
+hidden. If the meter still does not move, select **Stop this device's mic**,
+then **Use this device's mic** again.
 
 ## Step 5. Get good matches
 
@@ -237,10 +256,13 @@ HTTPS. The server decodes it into a temporary file, computes the fingerprint
 locally, and sends only the fingerprint to Shazam. The audio is not kept.
 Matches scrobble to the services of the account that sent the clip.
 
-**Mobile data.** The browser compresses each clip with its own codec: Opus in
-Chrome, AAC in Safari. Expect roughly 50 to 200 kB per clip, so about 10 to
-40 MB per hour of listening. This is an estimate from the codecs' usual
-bitrates, not a measurement. Over Tailscale the traffic is the same.
+**Mobile data.** The page asks the browser to record at 48 kbit/s: Opus in
+Chrome and Firefox, AAC in Safari. Shazam needs no more, because the server
+turns every clip into 16 kHz mono first. A 12-second clip measured 61 to
+71 kB in Chromium on Linux, with its test microphone. That is about 16 MB per
+hour of listening. Safari keeps to the same rate, but this was not measured on
+an iPhone. A silent clip is much smaller. Over Tailscale the traffic is the
+same.
 
 **Battery.** The screen stays on, the microphone records, and a clip is sent
 every 15 seconds or so. Plan for a charger on a long drive. Stop the
@@ -253,12 +275,15 @@ Shazam from the same address, and wait their turn: at most one request every
 `RECOGNITION_GAP_SECONDS`, 4 by default. A phone adds about one request every
 15 seconds, so many phones and rooms at once slow every answer.
 
-Unlike a room, the phone does not skip silent clips, and does not skip a song
-it already knows. Every clip asks Shazam. Stop the microphone when no music
-plays.
+As a room does, the server skips a silent clip without asking Shazam: one with
+a peak below -70 dBFS, or, when `QUIET_DBFS` is set, a floor below it. The
+page then says *Too quiet to identify*. Unlike a room, the phone does not skip
+a song it already knows, so every clip with sound asks Shazam. Stop the
+microphone when no music plays.
 
 When Shazam limits requests, every room and every phone pauses, from one
-minute up to ten. The page then shows *Error: HTTP 429* and keeps trying. See
+minute up to ten. The page then says *Shazam is busy, trying again in 45 s*,
+counts down, and records nothing until then. See
 [Rooms and cameras](../rooms.md) for the shared limit, and the
 **Recognition** card on the Rooms tab for the request count.
 
@@ -270,12 +295,15 @@ The note under the meter says what happened:
 |---|---|
 | *This browser only allows microphone access over https, or on localhost* | The address is plain `http://`. See [step 1](#step-1-put-the-page-behind-https). |
 | *Microphone blocked* | The permission was refused. See [step 3](#step-3-allow-the-microphone). |
-| *No match (input -91 dBFS)* | The microphone hears nothing. Pick another one in the menu, or check that nothing covers it. |
+| *Too quiet to identify (input -99 dBFS)* | The microphone hears nothing, so Shazam was not asked. Pick another one in the menu, or check that nothing covers it. |
+| *Too quiet to be music* | The clip's floor is below `QUIET_DBFS`, as between two sides of a record. |
 | *No match* at a good level | Too much speech or noise, or the recording is not in Shazam. See [Troubleshooting](../troubleshooting.md). |
-| *Error: HTTP 401* | The session ended. Reload the page and sign in. |
-| *Error: HTTP 415* | The server could not decode the clip. Check that ffmpeg works on the server. |
-| *Error: HTTP 429* | Shazam is limiting requests. See [Rate limits](#rate-limits). |
-| *Error: HTTP 502* | Shazam could not be reached. The page tries again with the next clip. |
-| The meter stops moving | The phone took the microphone away. Stop and start the microphone again. |
+| *Signed out — sign in again* | The session ended. Follow the link, sign in, and start the microphone again. |
+| *Error: the server could not decode the clip* | Check that ffmpeg works on the server. |
+| *Shazam is busy, trying again in 45 s* | Shazam is limiting requests. The page waits, then goes on by itself. See [Rate limits](#rate-limits). |
+| *The server cannot be reached, trying again in 5 s* | No network, or the server is down. The page waits longer after each failure, up to a minute, and goes on by itself. |
+| *The server could not identify the clip* | Shazam could not be reached. The page waits, then tries again. |
+| *The microphone was taken away* | A call or another app has the microphone. Bring the page to the front, and it goes on. See [step 4](#step-4-keep-the-screen-on). |
+| *This browser cannot keep the screen on* | Turn off auto-lock while you listen. See [step 4](#step-4-keep-the-screen-on). |
 
 For every route the page uses, see the [API](../api.md).
