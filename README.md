@@ -4,7 +4,7 @@
 
 [![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/scrobster)](https://artifacthub.io/packages/search?repo=scrobster)
 
-Self-hosted background-audio scrobbler. It listens to audio inputs (a mic, a line-in, or the audio of your security cameras), identifies songs with Shazam, and scrobbles them to Last.fm, Libre.fm, ListenBrainz, and Maloja. Point it at a radio, a TV, or every room in the house.
+Self-hosted background-audio scrobbler. It listens to audio inputs (a mic, a line-in, a USB turntable, or the audio of your security cameras), identifies songs with Shazam, and scrobbles them to Last.fm, Libre.fm, ListenBrainz, and Maloja. Point it at a radio, a TV, or every room in the house.
 
 <img width="1012" height="991" alt="image" src="https://github.com/user-attachments/assets/14454c0a-fd00-415c-8560-9b9a88de72b6" />
 
@@ -93,6 +93,26 @@ Tips for cameras:
   cleaned of it before anyone sees them.
 - **Audio stays on your network.** Each clip lives in a temporary file. Only
   the fingerprint, computed locally, goes to Shazam.
+- **Anything ffmpeg can read works**, not only cameras. A home-made device,
+  for example a microcontroller that digitises a line-out, can serve its audio
+  over HTTP or RTSP and be added as a stream. Send 16 kHz or more, for the
+  reason above.
+
+**A turntable with a USB output** is the best input for vinyl. It sends the
+record as digital audio, with no microphone or room noise in between. Plug it
+into the server and it appears as a sound card:
+
+```sh
+arecord -l
+# card 1: CODEC [USB Audio CODEC], device 0: USB Audio [USB Audio]
+```
+
+Add a microphone room with that device, here `hw:1,0`, or pick it from the
+list in the form. Use **Test level** while a record plays. Turntables send a
+fixed level, so near -20 dB is typical, and anything near -91 dB means the
+wrong card, or the turntable is set to its Bluetooth output. Card numbers can
+change between boots when more than one USB audio device is connected. To
+pin it, use the card's name instead, for example `hw:CARD=CODEC,DEV=0`.
 
 **A camera that goes offline is logged once.** The first failure logs a
 warning with the reason, then the room retries quietly, more gently each time
@@ -282,8 +302,10 @@ Index 0 is not always the microphone. On a Mac with virtual audio software, inde
 
 ## Docker (Linux host)
 
-Images are published to GitHub Packages for `linux/amd64` and `linux/arm64`, so
-a Raspberry Pi works.
+Images are published to GitHub Packages for `linux/amd64`, `linux/arm64` and
+`linux/arm/v7`, so a Raspberry Pi works on a 64-bit or a 32-bit OS, for example
+a Pi 3B on DietPi or Raspberry Pi OS. Docker pulls the right one by itself. To
+run without Docker, install as in Quick start and run it as a service as below.
 
 ```sh
 docker run -d --name scrobster \
@@ -310,6 +332,55 @@ Notes:
 - Docker Desktop on macOS cannot reach the microphone. Run bare on macOS.
 - `SSL_CERT_FILE` is only for macOS. scrobSter ignores it when the file is
   missing, so the same `.env` works in a container.
+
+## Run as a service (systemd)
+
+For a bare install on a Linux box such as a Raspberry Pi, a systemd unit
+starts scrobSter at boot and restarts it if it stops. These steps install it
+in `/opt/scrobster` under its own user:
+
+```sh
+sudo useradd --system --home-dir /opt/scrobster --groups audio scrobster
+sudo git clone https://github.com/benkelly/scrobSter /opt/scrobster
+cd /opt/scrobster
+sudo python3 -m venv .venv
+sudo .venv/bin/pip install -r requirements.txt
+sudo chown -R scrobster:scrobster /opt/scrobster
+```
+
+Put your settings in `/opt/scrobster/.env`, as in Quick start. Then save this
+as `/etc/systemd/system/scrobster.service`:
+
+```ini
+[Unit]
+Description=scrobSter
+Wants=network-online.target
+After=network-online.target sound.target
+
+[Service]
+User=scrobster
+SupplementaryGroups=audio
+# .env and the database are found relative to this directory.
+WorkingDirectory=/opt/scrobster
+ExecStart=/opt/scrobster/.venv/bin/python -m scrobster
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+And start it:
+
+```sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now scrobster
+journalctl -u scrobster -f
+```
+
+The first start without `ADMIN_PASSWORD` writes the random password to that log.
+The `audio` group lets the service read the sound card. Without it, every room
+reports a capture error.
 
 ## Kubernetes (Helm)
 
