@@ -3,7 +3,16 @@
 Start with the [README](../README.md): what scrobSter does, the requirements and
 the [Quick start](../README.md#quick-start).
 
-<!-- Guides: step-by-step guides in guides/ go here, as a "**Guides**" list above "**Set up**". -->
+**Guides**, step by step
+
+- **[Home Assistant](guides/home-assistant.md)**: from adding the add-on
+  repository to a room that scrobbles and a dashboard card.
+- **[Kubernetes with Helm](guides/kubernetes.md)**: secrets, storage,
+  HTTPS for phones, and a sound card on one node.
+- **[Proxmox VE](guides/proxmox.md)**: a USB turntable passed through to a
+  VM or an LXC container.
+- **[A phone as the microphone](guides/phone.md)**: HTTPS, permissions,
+  and good matches on an iPhone or Android.
 
 **Set up**
 

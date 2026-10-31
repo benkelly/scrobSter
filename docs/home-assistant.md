@@ -3,7 +3,8 @@
 scrobSter is available as a Home Assistant add-on from
 https://github.com/benkelly/ha-addons. The add-on runs this same image and takes
 the microphone from the Home Assistant audio system, so you choose the input in
-the add-on configuration.
+the add-on configuration. To set it up step by step, follow the
+[getting-started guide](guides/home-assistant.md).
 
 The app also reads `/data/options.json` directly, which is where the Supervisor
 writes add-on options. Each key matches an environment variable, in either case.
