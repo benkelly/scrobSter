@@ -234,9 +234,9 @@ def parse_device_list(backend: str, text: str) -> list[dict]:
         [AVFoundation indev @ 0x...] AVFoundation audio devices:
         [AVFoundation indev @ 0x...] [0] MacBook Pro Microphone
     `ffmpeg -sources <backend>` (alsa, pulse, and others) prints one per line,
-    with a star on the default:
-        * default [Playback/recording through the PulseAudio sound server]
-          hw:CARD=PCH,DEV=0 [HDA Intel PCH, ALC3232 Analog]
+    with a star on the default. ffmpeg 5.0 and later add the media types:
+        * default [Playback/recording through the PulseAudio sound server] (none)
+          hw:CARD=PCH,DEV=0 [HDA Intel PCH, ALC3232 Analog] (none)
     """
     found = []
     if backend == "avfoundation":
@@ -255,27 +255,64 @@ def parse_device_list(backend: str, text: str) -> list[dict]:
                     found.append({"device": f":{index.strip()}", "label": name.strip()})
         return found
     for line in text.splitlines():
-        m = re.match(r"^\s*(\*?)\s*(\S+)\s+\[(.*)\]\s*$", line)
+        m = re.match(r"^\s*(\*?)\s*(\S+)\s+\[(.*)\](?:\s+\([^()]*\))?\s*$", line)
         if m and not line.lower().startswith("auto-detected"):
             found.append({"device": m.group(2), "label": m.group(3).strip(),
                           "default": m.group(1) == "*"})
     return found
 
 
-def parse_proc_asound_pcm(text: str) -> list[dict]:
+def parse_proc_asound_cards(text: str) -> dict[int, tuple[str, str]]:
+    """Card number -> (id, name) from /proc/asound/cards. Two lines per card:
+         1 [CODEC          ]: USB-Audio - USB Audio CODEC
+                              Burr-Brown from TI USB Audio CODEC at usb-0000:00:14.0-2
+    The number follows the order the cards appeared at boot. The id stays.
+    """
+    cards = {}
+    for line in text.splitlines():
+        m = re.match(r"^\s*(\d+)\s+\[([^\]\s]+)\s*\]:.*? - (.*)$", line)
+        if m:
+            cards[int(m.group(1))] = (m.group(2), m.group(3).strip())
+    return cards
+
+
+def parse_proc_asound_pcm(text: str, cards=None) -> list[dict]:
     """Capture devices from /proc/asound/pcm, for a Linux box with no
     `ffmpeg -sources` support and no alsa-utils. One line per PCM:
         00-00: ALC3232 Analog : ALC3232 Analog : playback 1 : capture 1
+
+    A card found in `cards`, from parse_proc_asound_cards(), is named by its id,
+    as in hw:CARD=CODEC,DEV=0, because hw:1,0 can be another card after a reboot
+    that found the USB devices in another order. `numeric` keeps the number, so
+    the form can point a room saved with it at the name.
     """
+    cards = cards or {}
     found = []
     for line in text.splitlines():
         head, _, rest = line.partition(":")
         if "capture" not in rest or "-" not in head:
             continue
         card, _, dev = head.strip().partition("-")
+        card, dev = int(card), int(dev)
         name = rest.split(":")[0].strip()
-        found.append({"device": f"hw:{int(card)},{int(dev)}", "label": name})
+        if card in cards:
+            card_id, card_name = cards[card]
+            found.append({"device": f"hw:CARD={card_id},DEV={dev}",
+                          "label": f"{card_name}, {name}", "numeric": f"hw:{card},{dev}"})
+        else:
+            found.append({"device": f"hw:{card},{dev}", "label": name})
     return found
+
+
+PROC_ASOUND = pathlib.Path("/proc/asound")
+
+
+def _read_proc_asound(name) -> str:
+    """A file under /proc/asound, or "" when it is missing or unreadable."""
+    try:
+        return (PROC_ASOUND / name).read_text()
+    except OSError:
+        return ""
 
 
 async def _run(*argv, timeout=10) -> str:
@@ -302,12 +339,25 @@ async def list_devices(backend: str) -> list[dict]:
     except FileNotFoundError:
         return []
     found = parse_device_list(backend, text)
-    if not found and backend == "alsa":
-        try:
-            found = parse_proc_asound_pcm(pathlib.Path("/proc/asound/pcm").read_text())
-        except OSError:
-            pass
+    if backend == "alsa":
+        # ffmpeg always lists `null`, and can miss the cards in a container, so
+        # /proc is read as well. Its entries also carry the numeric name that
+        # the Rooms form needs to recognise an old `hw:1,0`.
+        found = merge_alsa_devices(found, parse_proc_asound_pcm(
+            _read_proc_asound("pcm"), parse_proc_asound_cards(_read_proc_asound("cards"))))
     return found
+
+
+def merge_alsa_devices(listed: list[dict], proc: list[dict]) -> list[dict]:
+    """ffmpeg's listing, then the /proc devices it left out. A device in both
+    keeps ffmpeg's entry and gains the numeric name from /proc."""
+    by_device = {d["device"]: d for d in proc}
+    merged = []
+    for d in listed:
+        numeric = by_device.get(d["device"], {}).get("numeric")
+        merged.append({**d, "numeric": numeric} if numeric else d)
+    seen = {d["device"] for d in listed}
+    return merged + [d for d in proc if d["device"] not in seen]
 
 
 async def _ffmpeg(*argv, data=None, timeout, on_stdout=None):

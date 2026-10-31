@@ -280,7 +280,9 @@ Linux:
 
 ```sh
 arecord -l
-# use for example AUDIO_DEVICE="hw:1,0" or AUDIO_DEVICE="default"
+# "card 1: CODEC [USB Audio CODEC], device 0" is AUDIO_DEVICE="hw:CARD=CODEC,DEV=0".
+# Prefer the name to hw:1,0: card numbers can change when USB devices appear
+# in another order at boot. AUDIO_DEVICE="default" also works.
 ```
 
 Step 2. Confirm that the device hears sound. Do not skip this step. A silent
