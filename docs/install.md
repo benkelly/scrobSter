@@ -1,6 +1,8 @@
 # Install
 
-For the Home Assistant add-on, see [Home Assistant](home-assistant.md).
+For the Home Assistant add-on, see [Home Assistant](home-assistant.md) and its
+[getting-started guide](guides/home-assistant.md). On Proxmox VE, see the
+[Proxmox guide](guides/proxmox.md).
 
 Every way runs the same single process, with its SQLite database. This is what
 it talks to:
@@ -50,8 +52,9 @@ commit SHA for every build.
 
 Notes:
 
-- `--group-add audio` is required. The container runs as an unprivileged user,
-  and reading the sound card needs the host audio group.
+- The container runs as root by default, because the Home Assistant add-on
+  needs that. To run it unprivileged, add `--user 1000:1000` and keep
+  `--group-add audio`: reading the sound card then needs the host audio group.
 - Docker Desktop on macOS cannot reach the microphone. Run bare on macOS.
 - `SSL_CERT_FILE` is only for macOS. scrobSter ignores it when the file is
   missing, so the same `.env` works in a container.
@@ -106,6 +109,8 @@ The `audio` group lets the service read the sound card. Without it, every room
 reports a capture error.
 
 ## Kubernetes (Helm)
+
+The [Kubernetes guide](guides/kubernetes.md) goes through it step by step.
 
 The chart is published next to the image, with the same version:
 

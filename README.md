@@ -13,7 +13,16 @@ Self-hosted background-audio scrobbler. It listens to audio inputs (a mic, a lin
 On this page: [How it works](#how-it-works), [Requirements](#requirements),
 [Quick start](#quick-start) and [Notes](#notes).
 
-<!-- Guides: step-by-step guides in docs/guides/ go here, as a "**Guides**" list above "**Set up**". -->
+**Guides**, step by step
+
+- **[Home Assistant](docs/guides/home-assistant.md)**: from adding the add-on
+  repository to a room that scrobbles and a dashboard card.
+- **[Kubernetes with Helm](docs/guides/kubernetes.md)**: secrets, storage,
+  HTTPS for phones, and a sound card on one node.
+- **[Proxmox VE](docs/guides/proxmox.md)**: a USB turntable passed through to a
+  VM or an LXC container.
+- **[A phone as the microphone](docs/guides/phone.md)**: HTTPS, permissions,
+  and good matches on an iPhone or Android.
 
 **Set up**
 

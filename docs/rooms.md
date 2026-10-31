@@ -213,6 +213,8 @@ Index 0 is not always the microphone. On a Mac with virtual audio software, inde
 
 ## Two ways to listen
 
+For a phone, see the [phone guide](guides/phone.md).
+
 **Server microphone (default).** The Python process records the host audio
 device with ffmpeg. It runs headless, needs no browser, and survives a closed
 tab. Use this for an always-on machine.
