@@ -14,6 +14,16 @@ under Users, and each person connects their own services.
 - **Only an administrator starts or stops listening**, and adds or changes rooms.
 - **Each user gets an API token** in Settings, for Home Assistant and scripts.
 
+Each person connects their services under Settings. A secret is never shown
+again once saved:
+
+![Settings, Services: Last.fm, ListenBrainz and Maloja connected, Libre.fm not connected](images/settings-services.png)
+
+An administrator adds people under Users, and sees which rooms scrobble for
+each of them:
+
+![The Users tab: alex, an administrator who receives three rooms, and sam, a user who receives the living room turntable, with a form to add someone](images/users.png)
+
 ## Configuration (environment variables)
 
 A service is enabled when all of its variables are set.

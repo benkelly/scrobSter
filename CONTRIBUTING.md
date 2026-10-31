@@ -38,6 +38,23 @@ CI runs the same script on every pull request, then imports every module,
 lints the Helm chart, builds the image for amd64 and 32-bit ARM, and installs
 the chart into a kind cluster.
 
+## Screenshots
+
+The pictures in `docs/images` come from `scripts/screenshots.py`, which runs
+the app on made-up accounts, rooms and plays. It never reads your `.env` or
+database, and it replaces the audio devices, ffmpeg, Shazam, the services and
+cover art, so it needs no hardware and refuses any connection that leaves the
+machine. It needs Node.js with the `playwright` package and its Chromium, and
+shrinks the pictures with `pngquant` and `optipng` when they are installed:
+
+```sh
+npm install playwright && npx playwright install chromium
+.venv/bin/python scripts/screenshots.py
+```
+
+Run it again after a change to the page, and look at every picture before you
+commit it. It takes about a minute, most of it a 12-second browser-mic clip.
+
 ## Dependencies
 
 `requirements.txt` pins exact versions, so a rebuild of the same commit

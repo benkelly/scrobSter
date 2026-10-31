@@ -12,11 +12,19 @@ name, which the history shows, and one input:
 **Test level** records three seconds and reports the peak, before you save. A
 camera with its audio turned off says so.
 
+![The room form editing the living room turntable: the device list shows the USB Audio CODEC picked by its card name, and Test level reports a peak of -14.2 dBFS](images/rooms-edit.png)
+
 Each room runs its own capture loop, and the Rooms tab shows each room's level
 and what it hears, live. Every user turns on **scrobble for me** for the rooms
 they want. A room scrobbles for nobody until then, except for the
 administrator who added it. A song that two rooms hear at once is still one play for
 someone who receives both.
+
+![The Rooms tab: a turntable playing Dreams by Fleetwood Mac and a kitchen camera, each with a live level meter and a scrobble for me switch, and an office microphone that is turned off](images/rooms.png)
+
+An administrator also sees how often Shazam is asked, below the rooms:
+
+![The Recognition card: 4 seconds between Shazam requests, 15 seconds between listens in each room, and the request count of the last ten minutes](images/rooms-recognition.png)
 
 A camera reaches its room directly, or through a restream:
 
@@ -223,6 +231,8 @@ browser records 12-second clips and posts them to `POST /api/match`.
 The server identifies and scrobbles them through the same path, so both inputs
 share one history and one duplicate filter. Use this for a phone or a laptop in
 another room.
+
+<img src="images/phone-mic.png" width="320" alt="A phone using its own microphone: the live meter under the buttons, a match for Here Comes the Sun by The Beatles, and the track shown as playing now via this device">
 
 The browser asks for raw audio, because echo cancellation, noise suppression,
 and automatic gain control remove the detail that Shazam needs.
