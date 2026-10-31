@@ -14,7 +14,8 @@ from scrobster.config import _load_options_json
 from scrobster.accounts import merge_credential, normalise_credential
 from scrobster.listener import (MAX_SEGMENT_SECONDS, NOW_PLAYING_REFRESH_SECONDS,
                                 PLAY_MEMORY_SECONDS, forget_old_plays,
-                                parse_device_list, parse_proc_asound_cards,
+                                merge_alsa_devices, parse_device_list,
+                                parse_proc_asound_cards,
                                 parse_proc_asound_pcm, parse_track,
                                 peak_dbfs, segment_seconds, should_announce,
                                 should_clear, should_scrobble)
@@ -134,6 +135,15 @@ def main():
     assert parse_proc_asound_pcm(pcm, {0: ("PCH", "HDA Intel PCH")})[1] == \
         {"device": "hw:1,0", "label": "USB Audio"}, "a card missing from cards keeps its number"
     assert parse_proc_asound_cards("--- no soundcards ---") == {}
+    listed = [{"device": "null", "label": "Discard all samples", "default": False},
+              {"device": "hw:CARD=PCH,DEV=0", "label": "HDA Intel PCH, ALC3232 Analog",
+               "default": False}]
+    assert merge_alsa_devices(listed, parse_proc_asound_pcm(pcm, cards)) == [
+        listed[0],
+        {**listed[1], "numeric": "hw:0,0"},
+        {"device": "hw:CARD=CODEC,DEV=0", "label": "USB Audio CODEC, USB Audio",
+         "numeric": "hw:1,0"}], "a card ffmpeg missed comes from /proc, and both keep the number"
+    assert merge_alsa_devices(listed, []) == listed
     from scrobster import listener as listener_mod
     saved_proc = listener_mod.PROC_ASOUND
     with tempfile.TemporaryDirectory() as d:

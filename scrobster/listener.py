@@ -339,10 +339,25 @@ async def list_devices(backend: str) -> list[dict]:
     except FileNotFoundError:
         return []
     found = parse_device_list(backend, text)
-    if not found and backend == "alsa":
-        found = parse_proc_asound_pcm(_read_proc_asound("pcm"),
-                                      parse_proc_asound_cards(_read_proc_asound("cards")))
+    if backend == "alsa":
+        # ffmpeg always lists `null`, and can miss the cards in a container, so
+        # /proc is read as well. Its entries also carry the numeric name that
+        # the Rooms form needs to recognise an old `hw:1,0`.
+        found = merge_alsa_devices(found, parse_proc_asound_pcm(
+            _read_proc_asound("pcm"), parse_proc_asound_cards(_read_proc_asound("cards"))))
     return found
+
+
+def merge_alsa_devices(listed: list[dict], proc: list[dict]) -> list[dict]:
+    """ffmpeg's listing, then the /proc devices it left out. A device in both
+    keeps ffmpeg's entry and gains the numeric name from /proc."""
+    by_device = {d["device"]: d for d in proc}
+    merged = []
+    for d in listed:
+        numeric = by_device.get(d["device"], {}).get("numeric")
+        merged.append({**d, "numeric": numeric} if numeric else d)
+    seen = {d["device"] for d in listed}
+    return merged + [d for d in proc if d["device"] not in seen]
 
 
 async def _ffmpeg(*argv, data=None, timeout, on_stdout=None):
