@@ -1,7 +1,9 @@
 """Capture loops: ffmpeg chunk -> shazamio match -> dedup -> store -> scrobble.
 
 Each room runs its own loop. They share one Shazam queue, because every request
-leaves from the same address and the rate limit counts them all.
+leaves from the same address and the rate limit counts them all. A browser
+room has no loop: its page posts the clips, which go through hear() as a
+capture does, and a watch task only notices when they stop coming.
 
 CLI:
   python -m scrobster.listener song.wav   # match one file, print, exit
@@ -557,6 +559,15 @@ OUTAGE_REMINDER_SECONDS = 15 * 60
 # within this long.
 OUTAGE_RETRY_MAX_SECONDS = 60
 
+# A browser room counts as failing after this long with no clip, at least, see
+# Listener.browser_timeout(). It looks this often.
+BROWSER_TIMEOUT_MIN_SECONDS = 60
+BROWSER_CHECK_SECONDS = 5
+# A page told the room is off asks again after this long.
+BROWSER_OFF_WAIT_SECONDS = 30
+BROWSER_GONE = ("the browser stopped sending; check that the room's display page is open"
+                " with its microphone on")
+
 
 def _minutes(seconds) -> str:
     minutes = round(seconds / 60)
@@ -627,6 +638,8 @@ class Room:
         self.known_key = None
         self.known_until = 0.0  # monotonic
         self.skipped = 0
+        # A browser room fails when no clip comes by this time, see check_browser().
+        self.expect_by = 0.0  # monotonic
 
     def update(self, row) -> bool:
         """Take the saved settings. True when the input itself changed."""
@@ -676,6 +689,8 @@ class Room:
     def describe(self) -> str:
         if self.kind == "stream":
             return rooms.mask_url(self.url)
+        if self.kind == "browser":
+            return "clips from a browser in the room"
         args = self.capture_args()
         return f"{args['backend']} {args['device']}"
 
@@ -745,8 +760,13 @@ class Listener:
             room = self.rooms.get(room_id)
             if room is None:
                 room = self.rooms[room_id] = Room(row)
-            elif room.update(row):
-                room.reset_input()
+            else:
+                was_browser = room.kind == "browser"
+                if room.update(row):
+                    room.reset_input()
+                    if was_browser != (room.kind == "browser"):
+                        # A capture loop and a browser's watch are different tasks.
+                        await room.stop()
             if self.running and room.enabled:
                 self._start_room(room)
             elif room.running:
@@ -758,7 +778,8 @@ class Listener:
     def _start_room(self, room):
         if not room.running:
             room.started_at = int(time.time())
-            room.task = asyncio.create_task(self._loop(room))
+            run = self._watch if room.kind == "browser" else self._loop
+            room.task = asyncio.create_task(run(room))
 
     def start(self):
         """Listen in every room that is turned on."""
@@ -854,57 +875,144 @@ class Listener:
                     await asyncio.sleep(wait)
                     continue
                 wav = await capture_chunk(**room.capture_args(), on_level=room.heard_level)
-                room.attempts += 1
-                room.last_attempt = int(time.time())
-                room.last_level_db = peak_dbfs(wav)
-                room.last_floor_db = floor_dbfs(wav)
-                silent = room.last_level_db < SILENT_DBFS
-                quiet = not silent and is_quiet(room.last_floor_db, config.QUIET_DBFS)
-                if quiet and not room.quiet:
-                    log.info("%s is quiet (floor %.0f dBFS), skipping recognition until"
-                             " it plays again", room.name, room.last_floor_db)
-                room.quiet = quiet
-                if silent or quiet:
-                    room.known_key, room.known_until = None, 0.0  # the song ended
-                    # Nothing audible: skip the request instead of spending quota on silence.
-                    if silent and not room._warned_silent:
-                        log.warning("%s is silent (%.0f dBFS), skipping recognition -"
-                                    " is its input %s correct?",
-                                    room.name, room.last_level_db, room.describe())
-                        room._warned_silent = True
-                elif time.monotonic() < room.known_until:
-                    # Still the song it matched twice: save the request.
-                    room._warned_silent = False
-                    room.skipped += 1
-                else:
-                    room._warned_silent = False
-                    info = await self.match_bytes(wav, room=room)
-                    room.last_error = None
-                    self._remember_song(room, info, cycle_start)
-                await self._clear_if_stopped()
-                back = room.outage.recovered(int(time.time()))
-                if back:
-                    room.last_error = None
-                    log.info("%s: %s", room.name, back)
-                    events.emit("rooms")
+                await self.hear(room, wav, cycle_start)
             except asyncio.CancelledError:
                 raise
-            except RateLimited as e:
-                room.last_error = str(e)
-                log.warning("%s: %s", room.name, e)
+            except RateLimited:
                 continue
             except Exception as e:
-                room.last_error = rooms.redact(str(e), room.url)[:300]
-                said = room.outage.failed(room.last_error, int(time.time()))
-                if said:
-                    getattr(log, said[0])("%s: %s", room.name, said[1])
-                    events.emit("rooms")
-                else:
-                    log.debug("%s: cycle failed: %s", room.name, room.last_error)
+                self.room_failed(room, e)
                 await self._until_next_cycle(
                     cycle_start, room.outage.retry_after(config.MATCH_INTERVAL))
                 continue
             await self._until_next_cycle(cycle_start)
+
+    async def hear(self, room, wav, cycle_start) -> dict:
+        """Handle one clip a room heard, from its own capture or from a browser.
+
+        Silence and a quiet record side are not asked about, and end the song.
+        A song the room knows is not asked about either. Anything else goes to
+        Shazam, through the queue every room shares, and scrobbles for the
+        room's members. `cycle_start` is the monotonic time the clip started.
+
+        Answers {"skipped": "silent" | "quiet" | "known" | None, "match": ...}.
+        A rate limit raises RateLimited, with the room's error set. Any other
+        failure raises for the caller to pass to room_failed().
+        """
+        room.attempts += 1
+        room.last_attempt = int(time.time())
+        room.last_level_db = peak_dbfs(wav)
+        room.last_floor_db = floor_dbfs(wav)
+        silent = room.last_level_db < SILENT_DBFS
+        quiet = not silent and is_quiet(room.last_floor_db, config.QUIET_DBFS)
+        if quiet and not room.quiet:
+            log.info("%s is quiet (floor %.0f dBFS), skipping recognition until"
+                     " it plays again", room.name, room.last_floor_db)
+        room.quiet = quiet
+        skipped, info = None, None
+        if silent or quiet:
+            room.known_key, room.known_until = None, 0.0  # the song ended
+            # Nothing audible: skip the request instead of spending quota on silence.
+            if silent and not room._warned_silent:
+                check = ("is the browser's microphone allowed and near the speakers?"
+                         if room.kind == "browser"
+                         else f"is its input {room.describe()} correct?")
+                log.warning("%s is silent (%.0f dBFS), skipping recognition - %s",
+                            room.name, room.last_level_db, check)
+                room._warned_silent = True
+            skipped = "silent" if silent else "quiet"
+        elif time.monotonic() < room.known_until:
+            # Still the song it matched twice: save the request.
+            room._warned_silent = False
+            room.skipped += 1
+            skipped = "known"
+        else:
+            room._warned_silent = False
+            try:
+                info = await self.match_bytes(wav, room=room)
+            except RateLimited as e:
+                room.last_error = str(e)
+                log.warning("%s: %s", room.name, e)
+                raise
+            room.last_error = None
+            self._remember_song(room, info, cycle_start)
+        await self._clear_if_stopped()
+        back = room.outage.recovered(int(time.time()))
+        if back:
+            room.last_error = None
+            log.info("%s: %s", room.name, back)
+            events.emit("rooms")
+        return {"skipped": skipped, "match": info}
+
+    def room_failed(self, room, error):
+        """Count a failed clip toward the room's outage, and log it the way
+        Outage decides."""
+        room.last_error = rooms.redact(str(error) or type(error).__name__, room.url)[:300]
+        said = room.outage.failed(room.last_error, int(time.time()))
+        if said:
+            getattr(log, said[0])("%s: %s", room.name, said[1])
+            events.emit("rooms")
+        else:
+            log.debug("%s: cycle failed: %s", room.name, room.last_error)
+
+    # --- a browser room: the clips come over HTTP ---------------------------
+
+    def browser_timeout(self) -> float:
+        """A browser room that sends nothing for this long counts as failing:
+        two cycles, and never less than BROWSER_TIMEOUT_MIN_SECONDS."""
+        return max(BROWSER_TIMEOUT_MIN_SECONDS, 2 * config.MATCH_INTERVAL)
+
+    async def _watch(self, room):
+        """What a browser room runs in place of a capture loop: it records
+        nothing, and only notices when the browser stops sending."""
+        log.info("listening in %s: clips from a browser, one per %ss",
+                 room.name, config.MATCH_INTERVAL)
+        room.expect_by = time.monotonic() + self.browser_timeout()
+        while True:
+            await asyncio.sleep(BROWSER_CHECK_SECONDS)
+            self.check_browser(room)
+
+    def check_browser(self, room, now=None):
+        """Mark a browser room failing once no clip came in time. Each missed
+        window counts as one try, so the outage log stays quiet."""
+        now = time.monotonic() if now is None else now
+        if now < room.expect_by:
+            return
+        room.expect_by = now + self.browser_timeout()
+        # What it last heard is no longer known to go on.
+        room.known_key, room.known_until = None, 0.0
+        self.room_failed(room, BROWSER_GONE)
+
+    def browser_advice(self, room) -> dict:
+        """Whether a browser room's page should record now, and if not, for
+        how long to wait. A page that waits as told is not counted as gone."""
+        now = time.monotonic()
+        wait, reason = 0.0, None
+        if not room.running:
+            wait, reason = BROWSER_OFF_WAIT_SECONDS, "off"
+        elif self.rate_limited_for():
+            wait, reason = self.rate_limited_for(), "busy"
+        elif now < room.known_until:
+            wait, reason = room.known_until - now, "known"
+        if wait and room.running:
+            room.expect_by = max(room.expect_by, now + wait + self.browser_timeout())
+        clip = segment_seconds(config.CHUNK_SECONDS)
+        return {"record": not wait, "wait": math.ceil(wait), "reason": reason,
+                "clip_seconds": clip, "interval": config.MATCH_INTERVAL}
+
+    async def hear_browser(self, room, wav) -> dict:
+        """One clip a browser room's page sent. The same as a capture, from
+        the moment the clip was recorded."""
+        room.expect_by = time.monotonic() + self.browser_timeout()
+        with wave.open(io.BytesIO(wav)) as w:
+            seconds = w.getnframes() / (w.getframerate() or 16000)
+        try:
+            return await self.hear(room, wav, time.monotonic() - seconds)
+        except RateLimited:
+            raise
+        except Exception as e:
+            self.room_failed(room, e)
+            raise
 
     def _remember_song(self, room, info, cycle_start):
         isrc = info.get("isrc") if info else None

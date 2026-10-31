@@ -9,6 +9,9 @@ camera stream, and each user chooses which rooms scrobble for them.
 
 Schema 4 adds display tokens, which may read what the rooms play and nothing
 else. Only a hash of each is kept.
+
+Schema 5 lets a display token belong to one room, and lets it send that room's
+audio, for a tablet that is both the room's screen and its microphone.
 """
 import json
 import os
@@ -17,7 +20,7 @@ import sqlite3
 
 from . import config
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def _conn():
@@ -114,12 +117,16 @@ def _create_schema(c):
 
         -- A screen by the hi-fi. Its token reads what the rooms play, nothing
         -- more, and is kept as a SHA-256 hash, so the database does not hold it.
+        -- With `room_id` it reads that room only. With `listen` as well, it
+        -- also sends that room's audio. Removing the room removes the token.
         CREATE TABLE IF NOT EXISTS display_tokens(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             token_hash TEXT NOT NULL UNIQUE,
             created_at INTEGER NOT NULL,
-            last_seen INTEGER);
+            last_seen INTEGER,
+            room_id INTEGER REFERENCES rooms(id) ON DELETE CASCADE,
+            listen INTEGER NOT NULL DEFAULT 0);
         """
     )
 
@@ -181,6 +188,17 @@ def _add_rooms(c, fresh=False):
     c.execute("DELETE FROM settings WHERE key IN ('audio_backend', 'audio_device')")
 
 
+def _scope_displays(c):
+    """Schema 5: a display token may belong to one room, and may listen there.
+    The tokens made before read every room and listen nowhere, as they did."""
+    columns = {r["name"] for r in c.execute("PRAGMA table_info(display_tokens)")}
+    if "room_id" not in columns:
+        c.execute("ALTER TABLE display_tokens ADD COLUMN"
+                  " room_id INTEGER REFERENCES rooms(id) ON DELETE CASCADE")
+    if "listen" not in columns:
+        c.execute("ALTER TABLE display_tokens ADD COLUMN listen INTEGER NOT NULL DEFAULT 0")
+
+
 def init():
     # sqlite reports only "unable to open database file" for a missing directory
     # and for one it may not write. Say which, because the usual cause is a
@@ -212,6 +230,8 @@ def init():
         _create_schema(c)
         if version < 3:
             _add_rooms(c, fresh)
+        if version < 5:
+            _scope_displays(c)
         c.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.close()
 

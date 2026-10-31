@@ -4,6 +4,9 @@ A room is a microphone on this machine or a stream, such as a camera's RTSP or
 RTSPS feed. A camera URL usually carries a password, so the password never
 leaves the server: the API shows it as MASK, and error text from ffmpeg is
 redacted before anybody can read it.
+
+A browser room has no input on the server. A browser in the room, such as a
+tablet by the hi-fi, records the clips and sends them with a room token.
 """
 import re
 import time
@@ -11,7 +14,7 @@ from urllib.parse import unquote, urlsplit
 
 from . import db, events
 
-KINDS = ("device", "stream")
+KINDS = ("device", "stream", "browser")
 STREAM_SCHEMES = ("rtsp", "rtsps", "http", "https")
 MASK = "***"
 NAME_MAX = 40
@@ -114,6 +117,8 @@ def _clean(fields, existing=None):
     if kind == "stream":
         out["url"] = check_url(merge_url(str(room.get("url") or ""),
                                          (existing or {}).get("url")))
+    elif kind == "browser":
+        pass  # the clips arrive over HTTP, so there is nothing to open here
     else:
         backend = str(room.get("backend") or "").strip() or None
         if backend and not re.fullmatch(r"[a-z0-9_]+", backend):

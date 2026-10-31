@@ -300,7 +300,9 @@ at all.
 
 A phone works for a room without a server microphone. For a room you use
 every day, a [room](../rooms.md) on the server is better: it needs no open
-tab, no awake screen and no phone.
+tab, no awake screen and no phone. A tablet that stays by the hi-fi can also be
+a room of its own, which scrobbles for everyone who chose it, and shows what
+plays. See [A tablet as the room's microphone](../rooms.md#a-tablet-as-the-rooms-microphone).
 
 ## Privacy, data and battery
 

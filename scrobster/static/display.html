@@ -15,6 +15,9 @@
   ?room=1        the room to show. Without it, whichever room matched last
   ?token=...     a display token from Settings, when this screen is not signed in
   ?idle=clock    what shows while nothing plays: clock (the default) or blank
+  ?listen=1      also be the room's microphone, for a browser room. Needs ?room=,
+                 a microphone link's token (or an administrator signed in here),
+                 and https. ?wav=1 records WAV even where MediaRecorder exists.
   Written for old tablets too: no build step, nothing newer than Safari 10. -->
 <style>
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
@@ -127,6 +130,34 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 2.2vmin; color: rgba(255, 255, 255, .55);
   }
+
+  /* The microphone, when this screen is the room's: small and dim, bottom left. */
+  #mic {
+    position: fixed; left: 3.5vmin; bottom: 3vmin; max-width: 60vw;
+    display: -webkit-box; display: -webkit-flex; display: flex;
+    -webkit-box-align: center; -webkit-align-items: center; align-items: center;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 1.7vmin; letter-spacing: .08em; color: rgba(255, 255, 255, .42);
+  }
+  #mic.hidden { display: none; }
+  #mic .dot {
+    -webkit-flex: none; flex: none; width: 1vmin; height: 1vmin; border-radius: 50%;
+    background: rgba(255, 255, 255, .3); margin-right: 1.2vmin;
+  }
+  #mic.on .dot { background: #e5484d; box-shadow: 0 0 1.2vmin rgba(229, 72, 77, .7); }
+  #mic.wait .dot { background: #d9a43a; }
+  #mic.bad { color: rgba(255, 190, 120, .85); }
+  #mic.bad .dot { background: #f2994a; }
+  #mic .bar {
+    -webkit-flex: none; flex: none; width: 8vmin; height: .5vmin; margin-left: 1.4vmin;
+    background: rgba(255, 255, 255, .1); border-radius: .3vmin; overflow: hidden;
+  }
+  #mic .bar.hidden { display: none; }
+  #micfill { display: block; height: 100%; width: 0; background: rgba(255, 255, 255, .45); }
+  #micline { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #mic.bad { max-width: 86vw; }
+  #mic.bad #micline { white-space: normal; line-height: 1.4; }
+  @media (orientation: portrait) { #mic { font-size: 2.3vmin; } }
 </style>
 </head>
 <body class="idle still">
@@ -143,6 +174,7 @@
 </div>
 <div id="idle" class="layer" aria-hidden="true"><div id="clock"></div><div id="date"></div></div>
 <div id="msg" role="status"></div>
+<div id="mic" class="hidden" role="status" aria-live="polite"><span class="dot"></span><span id="micline"></span><span class="bar hidden" id="micbar"><span id="micfill"></span></span></div>
 
 <script>
 (function () {
@@ -157,6 +189,7 @@
   var room = /^\d+$/.test(params.room || "") ? params.room : null;
   var token = params.token || "";
   var idleMode = params.idle === "blank" ? "blank" : "clock";
+  var listen = params.listen === "1" && !!room;
 
   var POLL_MS = 5000;      // without server-sent events
   var CHECK_MS = 20000;    // with them, for a song that stops without an event
@@ -265,6 +298,137 @@
     poll(CHECK_MS);
   }
 
+  // --- the room's microphone, with ?listen=1 ---
+  // The server says before each clip whether it wants one: not while the
+  // room is off, Shazam is limiting requests, or the song is one it knows.
+  var mic = null, micState = "";
+  var listenUrl = "api/rooms/" + room + "/listen", clipUrl = "api/rooms/" + room + "/clip";
+  var lastClipAt = 0;
+
+  function micShow(cls, text, meter) {
+    var el = $("mic");
+    el.className = cls;
+    $("micline").textContent = text;
+    $("micbar").className = meter ? "bar" : "bar hidden";
+    if (!meter) $("micfill").style.width = "0";
+  }
+  function seconds(n) { return n >= 90 ? Math.round(n / 60) + " min" : Math.round(n) + " s"; }
+
+  function authHeaders() { return token ? {authorization: "Bearer " + token} : {}; }
+
+  // The same errors as ScrobsterMic.upload() makes, so the loop treats both alike.
+  function getJson(url) {
+    return fetch(url, {credentials: "same-origin", headers: authHeaders(), cache: "no-store"})
+      .then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (j) {
+          if (r.ok) return j;
+          var err = new Error(typeof j.detail === "string" ? j.detail : "HTTP " + r.status);
+          err.status = r.status;
+          var after = parseInt(r.headers.get("retry-after") || "", 10);
+          err.retryAfter = after > 0 ? after : null;
+          throw err;
+        });
+      }, function (e) {
+        var err = new Error("the server cannot be reached");
+        err.network = true;
+        throw err;
+      });
+  }
+
+  function refused(e) {
+    if (e.status === 401) return "This microphone link no longer works. Make a new one from the room's Display button.";
+    if (e.status === 403) return "This link shows the room but cannot listen. Make a microphone link from the room's Display button.";
+    if (e.status === 409) return "This room records on the server, so it takes no audio from here.";
+    if (e.status === 404) return "There is no room " + room + ".";
+    return null;
+  }
+
+  function beforeClip() {
+    return getJson(listenUrl).then(function (a) {
+      if (!a.record) return {seconds: a.wait || 30, reason: a.reason || "off"};
+      // Keep to the room's cadence: one clip per interval, as a server room.
+      var left = (a.interval || 15) - (Date.now() - lastClipAt) / 1000;
+      if (lastClipAt && left > 1) return {seconds: Math.ceil(left), reason: "cadence"};
+      lastClipAt = Date.now();
+      return null;
+    });
+  }
+
+  function onMicState(state, info) {
+    micState = state;
+    if (state === "starting") micShow("wait", "Asking for the microphone…", false);
+    else if (state === "listening" || state === "sending") micShow("on", "Listening", true);
+    else if (state === "waiting") {
+      var r = info.reason;
+      if (r === "cadence") micShow("on", "Listening", true);
+      else if (r === "known") micShow("wait", "Knows this song · listens again in " + seconds(info.seconds), true);
+      else if (r === "off") micShow("wait", "Listening is off for this room", false);
+      else if (r === "busy") micShow("wait", "Shazam is busy · again in " + seconds(info.seconds), true);
+      else micShow("bad", "Cannot reach scrobSter · again in " + seconds(info.seconds), true);
+    }
+    else if (state === "interrupted") micShow("bad", "Another app has the microphone · coming back", false);
+    else if (state === "blocked") micShow("bad", "Microphone blocked. Allow it for this site, then tap the screen.", false);
+    else if (state === "signedout") micShow("bad", refused(info.error || {}) || "This link can no longer listen.", false);
+    else if (state === "error") micShow("bad", "A clip failed: " + ((info.error && info.error.message) || "unknown error"), true);
+    else if (state === "stopped") micShow("", "Microphone off", false);
+  }
+
+  function onMicLevel(db) {
+    if (db == null) { $("micfill").style.width = "0"; return; }
+    $("micfill").style.width = Math.max(0, Math.min(100, (db + 60) / 60 * 100)).toFixed(0) + "%";
+  }
+
+  function startMic(advice) {
+    mic = ScrobsterMic.create({
+      clipMs: (advice.clip_seconds || 12) * 1000, gapMs: 0,
+      storageKey: "displayMicDeviceId", wav: params.wav === "1",
+      beforeClip: beforeClip,
+      onClip: function (blob) {
+        return ScrobsterMic.upload(clipUrl, blob, {headers: authHeaders()}).then(function (j) {
+          if (j && j.match) load();
+          return j;
+        });
+      },
+      onState: onMicState, onLevel: onMicLevel
+    });
+    mic.start();
+  }
+
+  function startListening() {
+    var secure = window.isSecureContext !== undefined ? window.isSecureContext
+      : location.protocol === "https:" || /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+    if (!secure) {
+      micShow("bad", "The microphone needs https. Open this page at an https:// address.", false);
+      return;
+    }
+    if (!window.Promise || !window.fetch) {
+      micShow("bad", "This browser is too old to listen. It can still show the room.", false);
+      return;
+    }
+    micShow("wait", "Starting the microphone…", false);
+    var script = document.createElement("script");
+    script.src = "mic.js";
+    script.onerror = function () { micShow("bad", "Could not load mic.js. Reload the page.", false); };
+    script.onload = function () {
+      if (!ScrobsterMic.supported()) {
+        micShow("bad", "This browser cannot use the microphone here.", false);
+        return;
+      }
+      // Ask the server first, so a link that may only show the room never
+      // asks for the microphone.
+      var ask = function () {
+        getJson(listenUrl).then(startMic, function (e) {
+          var text = refused(e);
+          if (text) { micShow("bad", text, false); return; }
+          micShow("bad", "Cannot reach scrobSter · trying again", false);
+          setTimeout(ask, 15000);
+        });
+      };
+      ask();
+    };
+    document.head.appendChild(script);
+  }
+
   // --- idle clock ---
   function pad(n) { return (n < 10 ? "0" : "") + n; }
   function tick() {
@@ -286,6 +450,7 @@
     var small = Math.min(window.innerWidth, window.innerHeight);
     shift($("now"), small * 0.012);
     shift($("idle"), small * 0.18);
+    shift($("mic"), small * 0.01);
   }
 
   // --- keep the screen on, where the browser allows it ---
@@ -308,6 +473,10 @@
   document.addEventListener("mousemove", moved);
   document.addEventListener("click", function () {
     wake();
+    if (mic) {
+      // A blocked microphone is asked for again; a suspended one resumes.
+      if (!mic.isOn()) mic.start(); else mic.resume();
+    }
     var el = document.documentElement;
     var go = el.requestFullscreen || el.webkitRequestFullscreen;
     if (go && !(document.fullscreenElement || document.webkitFullscreenElement)) {
@@ -321,6 +490,7 @@
   tick(); setInterval(tick, 1000);
   drift(); setInterval(drift, DRIFT_MS);
   load(); follow(); wake();
+  if (listen) startListening();
 })();
 </script>
 </body>

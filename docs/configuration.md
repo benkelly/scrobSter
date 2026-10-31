@@ -36,6 +36,13 @@ the same list when a screen goes away. Only its hash is kept, so a lost one
 cannot be shown again: make a new one. [The API](api.md#displays) lists every
 option.
 
+For a browser room, the form also offers **Use this browser as the room's
+microphone**. The link then ends in `&listen=1`, and its token is a room
+token: it reads that room only, and sends what the tablet hears to that room.
+The list under Displays says what each token may do: "reads every room", or
+"Lounge: reads and listens". See
+[A tablet as the room's microphone](rooms.md#a-tablet-as-the-rooms-microphone).
+
 Each person connects their services under Settings. A secret is never shown
 again once saved:
 
