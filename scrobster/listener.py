@@ -63,6 +63,13 @@ class ShazamClient(HTTPClientInterface):
     """
 
     async def request(self, method, url, *args, **kwargs):
+        return await self._send(method, url, lambda r: r.json(content_type=None), **kwargs)
+
+    async def request_text(self, url, *, content_type, **kwargs):
+        # Required by shazamio>=0.9 for its chart endpoints. recognize() does not use it.
+        return await self._send("GET", url, lambda r: r.text(), **kwargs)
+
+    async def _send(self, method, url, read, **kwargs):
         timeout = aiohttp.ClientTimeout(total=SHAZAM_TIMEOUT_SECONDS)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.request(method, url, **kwargs) as r:
@@ -70,7 +77,7 @@ class ShazamClient(HTTPClientInterface):
                     raise RateLimited("Shazam is limiting requests from this address")
                 if r.status >= 400:
                     raise RuntimeError(f"Shazam answered HTTP {r.status}")
-                return await r.json(content_type=None)
+                return await read(r)
 
 
 def rate_limit_wait(previous: float) -> float:
