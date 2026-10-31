@@ -263,6 +263,8 @@ def _room_public(row, user, mine) -> dict:
            "last_error": live.last_error if live else None,
            "level_db": live.last_level_db if live else None,
            "live_db": live.live_level_db() if live else None,
+           "floor_db": live.last_floor_db if live else None,
+           "quiet": bool(live and live.quiet),
            "attempts": live.attempts if live else 0,
            "skipped": live.skipped if live else 0,
            "failing_since": live.outage.since if live else None,

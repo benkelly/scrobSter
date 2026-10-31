@@ -316,7 +316,7 @@ function roomState(r) {
   if (!r.running) return `<span class="muted">Not listening.</span>`;
   if (r.last_error) return `<span class="err clamp" title="${esc(r.last_error)}">${esc(r.last_error)}</span>`;
   if (r.level_db != null && r.level_db < SILENT_DB) return `<span class="err">&#9888; silent, check this room&rsquo;s input</span>`;
-  if (r.level_db != null && r.level_db < -70) return `<span class="muted">Quiet.</span>`;
+  if (r.quiet || (r.level_db != null && r.level_db < -70)) return `<span class="muted">Quiet.</span>`;
   if (!r.attempts) return `<span class="muted">Starting&hellip;</span>`;
   return `<span class="muted">Listening for music&hellip;</span>`;
 }

@@ -219,6 +219,7 @@ A service is enabled when all of its variables are set.
 | `SKIP_KNOWN_SECONDS` | `60` | while a room hears a song it matched twice, skip Shazam for up to this long, or until the song should end. `0` asks every cycle |
 | `RESCROBBLE_MINUTES` | `30` | fallback cooldown, used only when a match has no offset |
 | `NOW_PLAYING_STOP_SECONDS` | `180` | clear the playing-now mark after this long with no match |
+| `QUIET_DBFS` | unset | a clip whose floor, its median level with clicks and pops ignored, is below this counts as silence. For a turntable, try `-50`. Unset, only a peak below -70 dBFS is silence. See Troubleshooting |
 | `DB_PATH` | `scrobster.db` | SQLite history file |
 | `PORT` | `8000` | web/API port |
 | `ADMIN_USERNAME` | `admin` | name of the account made on the first start |
@@ -522,7 +523,7 @@ through Home Assistant ingress.
 | Endpoint | Purpose |
 |---|---|
 | `POST /api/login` `{username, password}` | sign in, sets a session cookie |
-| `GET /api/status` | version, listening state, last match, profile links, and `rooms`: each room's state, level and last match, and `skipped`, the cycles that did not ask Shazam because the song was known, and `failing_since`, the unix time a room started failing, or `null`. `level_db` and `last_error` describe the first room. `mqtt` says whether the broker is connected |
+| `GET /api/status` | version, listening state, last match, profile links, and `rooms`: each room's state, level and last match, and `skipped`, the cycles that did not ask Shazam because the song was known, and `failing_since`, the unix time a room started failing, or `null`. `floor_db` is the last clip's median level, and `quiet` says it was below `QUIET_DBFS`. `level_db` and `last_error` describe the first room. `mqtt` says whether the broker is connected |
 | `GET /api/events` | what happens, as it happens, as [server-sent events](https://developer.mozilla.org/docs/Web/API/Server-sent_events). Each event is named by its kind: `match`, `scrobble`, `cleared`, `listening`, `rooms`, `member`, `users`, `services`, `rates`. You see what the rest of the API would show you. `resync` means events were lost, so read `/api/status` again |
 | `GET /api/levels` | `{room_id: dBFS}`: the live peak of each room that is listening, or `null` between two recordings |
 | `POST /api/listen` `{"on": true}` | start or stop listening in every room that is turned on. Administrator only |
@@ -573,6 +574,16 @@ The browser microphone has its own live meter.
   is too poor to identify. Raise the volume, or move the microphone closer.
 - On macOS, set Control Center > Mic Mode to **Standard**. Voice Isolation
   removes everything except speech, and it destroys the fingerprint.
+
+**A turntable keeps asking Shazam after the side ends.** The run-out groove
+still sends surface noise, clicks and pops. Their peak is loud, so the room
+does not count it as silence. Set `QUIET_DBFS=-50`. The room then compares the
+clip's floor, its median level, which a click does not raise. A quiet clip asks
+nothing and forgets the song, like silence. To pick your own value, read the
+room's `floor_db` in `/api/status` with the needle in the run-out groove, and
+again while music plays. Choose a value between the two, closer to the noise.
+It is off by default, because quiet music through a distant microphone or a
+camera can sit as low as a record's surface.
 
 **To scrobble music that plays on this computer**, capture the output instead of
 the microphone. Install a loopback device, for example

@@ -262,6 +262,7 @@ def main():
     check_known_song()
     check_librefm_scrobble()
     check_outage()
+    check_quiet()
     print("ok")
 
 
@@ -1493,6 +1494,126 @@ def check_outage():
     assert any("working again" in line for line in lines), lines
     assert seen[0] is not None, "the first success still sees the outage"
     assert room.outage.since is None and room.last_error is None
+
+
+def _wav_of(samples, rate=16000):
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(b"".join(struct.pack("<h", max(-32768, min(32767, int(s))))
+                               for s in samples))
+    return buf.getvalue()
+
+
+def _vinyl(seconds=3, seed=1):
+    """A record between sides: surface noise near -58 dBFS RMS, with a loud
+    click about every 0.3 s."""
+    import random
+    rnd = random.Random(seed)
+    out = [rnd.gauss(0, 41) for _ in range(16000 * seconds)]
+    for start in range(1000, len(out), 4800):
+        for i in range(16):
+            out[start + i] = 16000 * (-1) ** i
+    return _wav_of(out)
+
+
+def _tone(amplitude, seconds=3):
+    return _wav_of(amplitude * math.sin(i * 0.1) for i in range(16000 * seconds))
+
+
+def check_quiet():
+    """The end of a record side counts as silence once QUIET_DBFS is set: its
+    clicks lift the peak, but not the floor. Music, quiet music too, does not.
+    Left unset, nothing changes."""
+    import asyncio
+    from scrobster import accounts, config, db, enrich, listener as listener_mod
+    floor_dbfs, is_quiet = listener_mod.floor_dbfs, listener_mod.is_quiet
+
+    vinyl, music, soft = _vinyl(), _tone(8000), _tone(300)
+    assert peak_dbfs(vinyl) > -10, "the clicks are loud, so the peak test hears sound"
+    assert -61 < floor_dbfs(vinyl) < -55, floor_dbfs(vinyl)
+    assert -17 < floor_dbfs(music) < -14, "a sine's RMS is 3 dB under its peak"
+    assert -45 < floor_dbfs(soft) < -42, floor_dbfs(soft)
+    assert floor_dbfs(_wav(0)) == -99.0, "digital silence"
+    assert floor_dbfs(_wav_of([])) == -99.0, "no samples at all"
+    assert floor_dbfs(_wav_of([8000] * 10)) > -13, "shorter than one window"
+    # Music with a gap under half the clip, as between two songs, keeps its floor.
+    gap = _wav_of([0] * 16000 + [8000 * math.sin(i * 0.1) for i in range(32000)])
+    assert floor_dbfs(gap) > -20, floor_dbfs(gap)
+
+    assert not is_quiet(floor_dbfs(vinyl), None), "off by default"
+    assert is_quiet(floor_dbfs(vinyl), -50), "the run-out groove is quiet"
+    assert not is_quiet(floor_dbfs(music), -50), "music is not"
+    assert not is_quiet(floor_dbfs(soft), -50), "a quiet intro is not"
+    assert config.QUIET_DBFS is None, "the default keeps the peak test alone"
+
+    heard = []
+
+    async def scenario(quiet_dbfs):
+        house = listener_mod.Listener()
+        await house.sync_rooms()
+        room = house.rooms[min(house.rooms)]
+        asked, quiet_seen, levels = [], [], []
+
+        async def capture(**kwargs):
+            await asyncio.sleep(0)
+            return heard.pop(0) if heard else _wav(0)
+
+        async def recognize(wav):
+            asked.append(wav)
+            if wav is vinyl:
+                return {}
+            return {"track": {"key": "k", "title": "T", "subtitle": "A", "isrc": "X"},
+                    "matches": [{"offset": 50.0}]}
+
+        async def clear():
+            quiet_seen.append(room.quiet)
+            levels.append(room.last_level_db)
+        saved = (listener_mod.capture_chunk, config.MATCH_INTERVAL,
+                 config.SKIP_KNOWN_SECONDS, config.QUIET_DBFS)
+        listener_mod.capture_chunk = capture
+        house.recognize, house._clear_if_stopped = recognize, clear
+        config.MATCH_INTERVAL, config.SKIP_KNOWN_SECONDS = 0, 60
+        config.QUIET_DBFS = quiet_dbfs
+        try:
+            heard.extend([music] * 3 + [vinyl] * 3 + [music])
+            task = asyncio.create_task(house._loop(room))
+            while heard:
+                await asyncio.sleep(0.01)
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        finally:
+            (listener_mod.capture_chunk, config.MATCH_INTERVAL,
+             config.SKIP_KNOWN_SECONDS, config.QUIET_DBFS) = saved
+        return asked, quiet_seen[:7], levels[:7]
+
+    with tempfile.TemporaryDirectory() as d:
+        saved = config.DB_PATH
+        config.DB_PATH = os.path.join(d, "quiet.db")
+        try:
+            db.init()
+            accounts.create_user("admin", "password123", is_admin=True)
+            enrich._mbids["X"] = {}  # no network: MusicBrainz is already "asked"
+            asked, quiet_seen, levels = asyncio.run(scenario(-50))
+            asked_off, quiet_off, _ = asyncio.run(scenario(None))
+        finally:
+            config.DB_PATH = saved
+            enrich._mbids.pop("X", None)
+    # Two asks make the song known and the third cycle skips. The side ends:
+    # three quiet cycles ask nothing and forget the song, so the next side asks.
+    assert [w is vinyl for w in asked] == [False, False, False], len(asked)
+    assert quiet_seen == [False] * 3 + [True] * 3 + [False], quiet_seen
+    assert min(levels[3:6]) > -10, "the level still shows the peak"
+    # Unset, as before, the clicks pass for the song still playing, which the
+    # room keeps skipping as known.
+    assert [w is vinyl for w in asked_off] == [False, False], len(asked_off)
+    assert not any(quiet_off)
 
 
 if __name__ == "__main__":
