@@ -87,6 +87,7 @@
             <label class="grow hidden" id="audio_custom_wrap">ffmpeg device name
               <input id="audio_custom" placeholder="hw:1,0 on Linux, :1 on macOS" spellcheck="false"></label>
           </div>
+          <p class="note" id="audio_hint"></p>
           <details class="small" style="margin-top:.5rem">
             <summary class="muted">Advanced</summary>
             <label style="margin-top:.5rem">ffmpeg input format
@@ -931,6 +932,12 @@ function paintDevices(chosen) {
     + `<option value="${OTHER}" ${known ? "" : "selected"}>${a.devices.length ? "Other…" : "Type a device name"}</option>`;
   $("#audio_custom").value = known ? "" : chosen;
   $("#audio_custom_wrap").classList.toggle("hidden", known);
+  // A room saved as hw:1,0 keeps the number, which can be another card after a
+  // reboot. Point at the name, and leave the choice to the administrator.
+  const same = known ? null : a.devices.find(d => d.numeric === chosen);
+  $("#audio_hint").textContent = same
+    ? `${chosen} is ${same.label} for now, but the number can change when the server restarts. Pick ${same.device} to keep this card.`
+    : "";
 }
 
 async function loadAudio() {
@@ -946,6 +953,7 @@ $("#audio_device").onchange = () => {
   $("#audio_custom_wrap").classList.toggle("hidden", !other);
   if (other) $("#audio_custom").focus();
   $("#audio_note").textContent = "";
+  $("#audio_hint").textContent = "";
 };
 
 function editRoom(r) {

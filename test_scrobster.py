@@ -14,7 +14,8 @@ from scrobster.config import _load_options_json
 from scrobster.accounts import merge_credential, normalise_credential
 from scrobster.listener import (MAX_SEGMENT_SECONDS, NOW_PLAYING_REFRESH_SECONDS,
                                 PLAY_MEMORY_SECONDS, forget_old_plays,
-                                parse_device_list, parse_proc_asound_pcm, parse_track,
+                                parse_device_list, parse_proc_asound_cards,
+                                parse_proc_asound_pcm, parse_track,
                                 peak_dbfs, segment_seconds, should_announce,
                                 should_clear, should_scrobble)
 from scrobster.scrobble import profile_urls
@@ -109,6 +110,42 @@ def main():
     assert parse_proc_asound_pcm(pcm) == [
         {"device": "hw:0,0", "label": "ALC3232 Analog"},
         {"device": "hw:1,0", "label": "USB Audio"}], "only capture devices"
+    # ffmpeg 5.0 and later end each line with the media types
+    assert parse_device_list("alsa", """Auto-detected sources for alsa:
+  null [Discard all samples (playback) or generate zero samples (capture)] (none)
+* hw:CARD=CODEC,DEV=0 [USB Audio CODEC, USB Audio] (audio)
+""") == [
+        {"device": "null", "default": False,
+         "label": "Discard all samples (playback) or generate zero samples (capture)"},
+        {"device": "hw:CARD=CODEC,DEV=0", "label": "USB Audio CODEC, USB Audio",
+         "default": True}]
+    # a card's id outlives its number, which follows the order cards appear at boot
+    cards = parse_proc_asound_cards(""" 0 [PCH            ]: HDA-Intel - HDA Intel PCH
+                      HDA Intel PCH at 0xf7f10000 irq 32
+ 1 [CODEC          ]: USB-Audio - USB Audio CODEC
+                      Burr-Brown from TI USB Audio CODEC at usb-0000:00:14.0-2, full speed
+""")
+    assert cards == {0: ("PCH", "HDA Intel PCH"), 1: ("CODEC", "USB Audio CODEC")}
+    assert parse_proc_asound_pcm(pcm, cards) == [
+        {"device": "hw:CARD=PCH,DEV=0", "label": "HDA Intel PCH, ALC3232 Analog",
+         "numeric": "hw:0,0"},
+        {"device": "hw:CARD=CODEC,DEV=0", "label": "USB Audio CODEC, USB Audio",
+         "numeric": "hw:1,0"}]
+    assert parse_proc_asound_pcm(pcm, {0: ("PCH", "HDA Intel PCH")})[1] == \
+        {"device": "hw:1,0", "label": "USB Audio"}, "a card missing from cards keeps its number"
+    assert parse_proc_asound_cards("--- no soundcards ---") == {}
+    from scrobster import listener as listener_mod
+    saved_proc = listener_mod.PROC_ASOUND
+    with tempfile.TemporaryDirectory() as d:
+        listener_mod.PROC_ASOUND = listener_mod.pathlib.Path(d)
+        try:
+            assert listener_mod._read_proc_asound("cards") == "", "no cards file"
+            os.mkdir(os.path.join(d, "cards"))
+            assert listener_mod._read_proc_asound("cards") == "", "an unreadable cards file"
+            assert parse_proc_asound_pcm(pcm, parse_proc_asound_cards(
+                listener_mod._read_proc_asound("cards")))[0]["device"] == "hw:0,0"
+        finally:
+            listener_mod.PROC_ASOUND = saved_proc
 
     # a password is hashed before it is stored, and never kept as typed
     saved = normalise_credential({"username": "u", "password": "hunter2"})
