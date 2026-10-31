@@ -6,6 +6,12 @@ art and level, each user's last scrobble, and a switch per room for "scrobble
 for me". A room also has an event entity that fires when it starts hearing a song,
 for automations.
 
+A display by the hi-fi, such as an ESP32 with a screen or a Node-RED flow, can
+follow a room without Home Assistant: `room/<id>/now_playing` is a small JSON
+of the record playing, with every field but the room null once the music
+stops, and `room/<id>/playing` is ON or OFF. Both are retained, and are sent
+again only when the record changes, not on every match.
+
 Everything is pushed, so Home Assistant polls nothing. A change is published
 when it happens, from the events in events.py, and the rest of the state, such
 as a room's level, is looked at every TICK_SECONDS and sent only when it moved.
@@ -123,6 +129,12 @@ class Topics:
     def room_cover(self, room_id):
         return f"{self.root}/room/{room_id}/cover"
 
+    def room_now_playing(self, room_id):
+        return f"{self.root}/room/{room_id}/now_playing"
+
+    def room_playing(self, room_id):
+        return f"{self.root}/room/{room_id}/playing"
+
     def room_event(self, room_id):
         return f"{self.root}/room/{room_id}/event"
 
@@ -146,7 +158,8 @@ class Topics:
             return [self.hub]
         kind, _, item_id = rest.partition("_")
         if kind == "room":
-            return [self.room(item_id), self.room_cover(item_id)]
+            return [self.room(item_id), self.room_cover(item_id),
+                    self.room_now_playing(item_id), self.room_playing(item_id)]
         return [self.user(item_id)] if kind == "user" else []
 
 
@@ -159,6 +172,15 @@ def _track(match):
 
 def _line(match):
     return f"{match['artist']} - {match['title']}" if match else None
+
+
+def now_playing(room) -> dict:
+    """The record a room is playing, for a display: no offset or timestamp, so
+    it changes only when the record does. Null fields once the music stops."""
+    track = room["track"] if room["playing"] else None
+    return {"room": room["name"], "playing": room["playing"],
+            **{k: track.get(k) if track else None
+               for k in ("artist", "title", "album", "art_url")}}
 
 
 def snapshot(listener, users=None) -> dict:
@@ -217,20 +239,24 @@ def user_snapshot() -> list[dict]:
 def states(topics, snap) -> dict:
     """{topic: payload} for every retained state topic."""
     out = {topics.hub: snap["hub"]}
-    covers = {}
+    plain = {}
     for room in snap["rooms"]:
         out[topics.room(room["id"])] = {k: v for k, v in room.items() if k != "id"}
+        out[topics.room_now_playing(room["id"])] = now_playing(room)
+        plain[topics.room_playing(room["id"])] = "ON" if room["playing"] else "OFF"
         # Its own topic, sent only once there is a cover, because Home
-        # Assistant logs an error for an image with no URL.
+        # Assistant logs an error for an image with no URL. So it is never
+        # emptied: it keeps the last record's cover, and the image entity
+        # goes unavailable instead when the music stops, see room_config().
         if room["art_url"]:
-            covers[topics.room_cover(room["id"])] = room["art_url"]
+            plain[topics.room_cover(room["id"])] = room["art_url"]
     for user in snap["users"]:
         out[topics.user(user["id"])] = {
             "username": user["username"], "rooms": user["rooms"], "today": user["today"],
             "services": ", ".join(user["services"]) or "none",
             "last_line": _line(user["last"]) or "none", "last": user["last"]}
     return {**{topic: json.dumps(payload, sort_keys=True) for topic, payload in out.items()},
-            **covers}
+            **plain}
 
 
 def _device(topics, device_id, name, model, via=False, area=None):
@@ -253,7 +279,7 @@ def _payload(topics, device, state_topic, components):
     return {"device": device,
             "origin": {"name": "scrobSter", "sw_version": __version__,
                        "support_url": PROJECT_URL},
-            "availability_topic": topics.status, "qos": 1, "components": components}
+            "availability": [{"topic": topics.status}], "qos": 1, "components": components}
 
 
 def hub_config(topics) -> dict:
@@ -295,8 +321,17 @@ def room_config(topics, room) -> dict:
                         "value_template": "{{ value_json.now_playing }}",
                         "json_attributes_topic": topics.room(room["id"]),
                         "json_attributes_template": track},
+        # Unavailable while the room is idle, so a dashboard does not keep
+        # showing the last record. An availability of its own replaces the
+        # device's, so it repeats scrobSter's status too.
         "cover": {"platform": "image", "name": "Cover art",
-                  "url_topic": topics.room_cover(room["id"])},
+                  "url_topic": topics.room_cover(room["id"]),
+                  "availability_mode": "all",
+                  "availability": [
+                      {"topic": topics.status},
+                      {"topic": topics.room(room["id"]),
+                       "value_template": "{{ 'online' if value_json.playing"
+                                         " and value_json.art_url else 'offline' }}"}]},
         "playing": {"platform": "binary_sensor", "name": "Music", "icon": "mdi:music-note",
                     "value_template": "{{ 'ON' if value_json.playing else 'OFF' }}"},
         "level": {"platform": "sensor", "name": "Input level", "icon": "mdi:microphone",
