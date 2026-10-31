@@ -1099,7 +1099,8 @@ def check_mqtt():
     assert topics.owns("scrobster_abc123") and topics.owns("scrobster_abc123_room_4")
     assert not topics.owns("scrobster_abc1234_room_4"), "another install"
     assert topics.states_of("scrobster_abc123_room_4") == [
-        "scrobster/abc123/room/4/state", "scrobster/abc123/room/4/cover"]
+        "scrobster/abc123/room/4/state", "scrobster/abc123/room/4/cover",
+        "scrobster/abc123/room/4/now_playing", "scrobster/abc123/room/4/playing"]
     assert topics.states_of("scrobster_abc123_user_2") == ["scrobster/abc123/user/2/state"]
     assert topics.states_of("scrobster_abc123") == ["scrobster/abc123/state"]
     payload = {"components": {"a": {"platform": "sensor", "name": "A"}}}
@@ -1202,6 +1203,20 @@ def check_mqtt():
                     state = json.loads(client.last(topics.room(mic["id"])))
                     assert state["now_playing"] == "idle" and not state["playing"]
                     assert client.last(topics.room_cover(mic["id"])) is None, "no cover yet"
+                    assert json.loads(client.last(topics.room_now_playing(mic["id"]))) == {
+                        "room": mic["name"], "playing": False, "artist": None,
+                        "title": None, "album": None, "art_url": None}
+                    assert client.last(topics.room_playing(mic["id"])) == "OFF"
+                    # The cover is unavailable while the room is idle, and
+                    # while scrobSter is away, like everything else.
+                    assert room_config["availability"] == [{"topic": topics.status}]
+                    cover = room_config["components"]["cover"]
+                    assert cover["availability_mode"] == "all"
+                    assert [a["topic"] for a in cover["availability"]] == [
+                        topics.status, topics.room(mic["id"])]
+                    assert "playing" in cover["availability"][1]["value_template"]
+                    assert cover["unique_id"] == f"{topics.device_id('room', mic['id'])}_cover", \
+                        "kept, for the installs that have it"
 
                     # Commands act at once, and the new state follows.
                     client.inbox.put_nowait(Client._message(
@@ -1223,6 +1238,10 @@ def check_mqtt():
                     state = json.loads(client.last(topics.room(mic["id"])))
                     assert state["now_playing"] == "A - Song" and state["playing"]
                     assert client.last(topics.room_cover(mic["id"])) == "u"
+                    assert client.last(topics.room_playing(mic["id"])) == "ON"
+                    playing = json.loads(client.last(topics.room_now_playing(mic["id"])))
+                    assert playing == {"room": mic["name"], "playing": True, "artist": "A",
+                                       "title": "Song", "album": "Al", "art_url": "u"}
 
                     # The same song on the next cycle is not a new event.
                     fired_before = sum(t == topics.room_event(mic["id"])
@@ -1249,6 +1268,27 @@ def check_mqtt():
                         topics.config(topics.device_id("user", sam["id"]))))
                     assert user_config["components"][f"room_{other['id']}"] == \
                         {"platform": "switch"}
+
+                    # The same song matching again sends no new record to a display.
+                    sent_before = sum(t == topics.room_now_playing(mic["id"])
+                                      for t, _, _ in client.published)
+                    await house._on_match(info, "server", [sam], house.rooms[mic["id"]])
+                    await asyncio.sleep(0.15)
+                    assert sum(t == topics.room_now_playing(mic["id"]) for t, _, _
+                               in client.published) == sent_before, "the record did not change"
+
+                    # The music stops: a display goes blank, and Home Assistant's
+                    # image is unavailable, so neither keeps the last record.
+                    house.rooms[mic["id"]].last_match["ts"] -= config.NOW_PLAYING_STOP_SECONDS
+                    await until(lambda: client.last(topics.room_playing(mic["id"])) == "OFF",
+                                "stopped")
+                    stopped = json.loads(client.last(topics.room_now_playing(mic["id"])))
+                    assert not stopped["playing"] and stopped["art_url"] is None
+                    assert stopped["artist"] is None and stopped["title"] is None
+                    state = json.loads(client.last(topics.room(mic["id"])))
+                    assert state["now_playing"] == "idle" and not state["playing"]
+                    assert client.last(topics.room_cover(mic["id"])) == "u", \
+                        "never emptied, Home Assistant would log an error"
 
                     published = len(client.published)
                     await asyncio.sleep(0.2)
