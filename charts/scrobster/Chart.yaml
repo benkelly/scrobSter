@@ -28,4 +28,4 @@ annotations:
     - name: Source
       url: https://github.com/benkelly/scrobSter
     - name: Documentation
-      url: https://github.com/benkelly/scrobSter#kubernetes-helm
+      url: https://github.com/benkelly/scrobSter/blob/main/docs/install.md#kubernetes-helm
