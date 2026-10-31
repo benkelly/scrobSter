@@ -618,6 +618,7 @@ class Room:
         self.task = None
         self.started_at = None
         self.last_match = None
+        self.song_since = None  # unix time the room started hearing last_match's song
         self.reset_input()
         self.last_attempt = None
         self.attempts = 0
@@ -980,6 +981,10 @@ class Listener:
             for user in users:
                 self.browser_matches[user["id"]] = match
         else:
+            before = room.last_match
+            if not (before and before["track_key"] == info["track_key"]
+                    and now - before["ts"] < config.NOW_PLAYING_STOP_SECONDS):
+                room.song_since = now
             room.last_match = match
         for user in users:
             self._last_match_at[user["id"]] = now

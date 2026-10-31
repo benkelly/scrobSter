@@ -263,6 +263,7 @@ def main():
     check_librefm_scrobble()
     check_outage()
     check_quiet()
+    check_display()
     print("ok")
 
 
@@ -1614,6 +1615,233 @@ def check_quiet():
     # room keeps skipping as known.
     assert [w is vinyl for w in asked_off] == [False, False], len(asked_off)
     assert not any(quiet_off)
+
+
+def _request(asgi_app, path, headers=None, method="GET"):
+    """One request straight into the ASGI app, with no server and no HTTP
+    client. Returns (status, {header: value}, body)."""
+    import asyncio
+    from urllib.parse import urlsplit
+    url = urlsplit(path)
+    scope = {"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+             "method": method, "scheme": "http", "path": url.path,
+             "raw_path": url.path.encode(), "query_string": url.query.encode(),
+             "headers": [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()],
+             "client": ("192.0.2.7", 50000), "server": ("scrobster", 80), "root_path": ""}
+    sent, asked = [], []
+
+    async def receive():
+        # The body once, then the client goes, which ends an event stream.
+        asked.append(1)
+        if len(asked) == 1:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        await asyncio.sleep(0.05)
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        sent.append(message)
+
+    asyncio.run(asgi_app(scope, receive, send))
+    start = next(m for m in sent if m["type"] == "http.response.start")
+    head = {k.decode(): v.decode() for k, v in start["headers"]}
+    body = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+    return start["status"], head, body
+
+
+def check_display():
+    """A display token reads what the rooms play and nothing else. The cover
+    has a fixed URL, a size, an ETag, and a defined answer while nothing plays."""
+    import asyncio
+    import sqlite3
+    import struct
+    import time
+    import zlib
+    from scrobster import accounts, app, config, db, display
+
+    class Running:
+        """Stands in for a room's capture task."""
+        def done(self):
+            return False
+
+    # Apple's covers carry their size in the last part of the URL.
+    apple = ("https://is1-ssl.mzstatic.com/image/thumb/Music123/v4/0c/72/a1/"
+             "0c72a174-9208-6c86-e479-79865376e904/19UMGIM66006.rgb.jpg/400x400cc.jpg")
+    assert display.sized_url(apple, 1000).endswith("/19UMGIM66006.rgb.jpg/1000x1000cc.jpg")
+    assert display.sized_url(apple, 64).count("400") == 0, "only the size changes"
+    assert display.sized_url(apple, None) == apple, "no size, no change"
+    assert display.sized_url(apple.replace("400x400cc", "600x600bb"), 300).endswith("/300x300bb.jpg")
+    other = "https://images.shazam.com/coverart/t52389869-b1104656584_s400.jpg"
+    assert display.sized_url(other, 300) == other, "another host is served as it is"
+    assert display.sized_url("http://is1.mzstatic.com.evil/image/thumb/a/400x400cc.jpg",
+                             300).endswith("400x400cc.jpg"), "only Apple's own host"
+
+    # The idle picture is a real PNG of the asked size, black throughout.
+    png = display.idle_png(64)
+    assert png.startswith(b"\x89PNG\r\n\x1a\n")
+    assert struct.unpack(">II", png[16:24]) == (64, 64)
+    idat = png[png.index(b"IDAT") + 4:png.index(b"IEND") - 8]
+    assert set(zlib.decompress(idat)) == {0} and len(zlib.decompress(idat)) == 65 * 64
+
+    # A display sees a match in a room, and that rooms or listening changed.
+    assert app.display_event({"kind": "match", "ts": 1, "room_id": 2, "users": [1],
+                              "match": {"title": "T"}}) == {"kind": "match", "ts": 1, "room_id": 2}
+    assert app.display_event({"kind": "match", "ts": 1, "room_id": None, "users": [1],
+                              "match": {}}) is None, "a browser clip is its owner's"
+    for kind in ("scrobble", "services", "users", "member", "cleared", "rates"):
+        assert app.display_event({"kind": kind, "ts": 1, "user_id": 1, "users": [1]}) is None, kind
+    assert app.display_event({"kind": "rooms", "ts": 1}) == {"kind": "rooms", "ts": 1}
+
+    fetched = []
+
+    async def fake_fetch(url):
+        fetched.append(url)
+        if "broken" in url or "999x999" in url:
+            raise ValueError("cover is text/html, not an image")
+        return "image/jpeg", b"JPEG:" + url.encode(), f'"{len(fetched)}"'
+
+    with tempfile.TemporaryDirectory() as d:
+        saved = (config.DB_PATH, display._fetch, app.listener.rooms)
+        config.DB_PATH = os.path.join(d, "display.db")
+        display._fetch = fake_fetch
+        display._covers.clear()
+        display._failed.clear()
+        app.listener.rooms = {}
+        try:
+            db.init()
+            owner = accounts.create_user("owner", "password123", is_admin=True)
+            asyncio.run(app.listener.sync_rooms())
+            room = app.listener.first_room()
+
+            made = accounts.create_display("Living room tablet")
+            token = made["token"]
+            assert token.startswith(accounts.DISPLAY_PREFIX)
+            with sqlite3.connect(config.DB_PATH) as c:
+                row = c.execute("SELECT * FROM display_tokens").fetchone()
+            assert token not in row and accounts._token_hash(token) in row, "only the hash is kept"
+            assert "token" not in accounts.list_displays()[0], "the list never shows it"
+
+            q = f"token={token}"
+            bearer = {"authorization": f"Bearer {token}"}
+            status, head, body = _request(app.app, f"/api/rooms/{room.id}/now?{q}")
+            assert status == 200, (status, body)
+            now = json.loads(body)
+            assert now["playing"] is False and now["title"] is None and now["room"] == "Server mic"
+            assert head["cache-control"] == "no-store"
+            assert _request(app.app, "/api/now", bearer)[0] == 200, "as a header too"
+            assert _request(app.app, "/api/rooms/99/now", bearer)[0] == 404
+            last_seen = accounts.list_displays()[0]["last_seen"]
+            assert last_seen, "the list says when a display last asked"
+
+            # Nothing else, as a header or in the URL.
+            for path in ("/api/status", "/api/recent", "/api/rooms", "/api/users", "/api/me",
+                         "/api/levels", "/api/services", "/api/recognition", "/api/audio",
+                         "/api/displays"):
+                assert _request(app.app, path, bearer)[0] == 401, path
+                assert _request(app.app, f"{path}?{q}")[0] == 401, path
+            assert _request(app.app, f"/api/listen?{q}", method="POST")[0] == 401
+            assert _request(app.app, f"/api/rooms/{room.id}/member?{q}", method="PUT")[0] == 401
+
+            # A personal token is not read from a URL, only from the header.
+            mine = owner["api_token"]
+            assert _request(app.app, f"/api/now?token={mine}")[0] == 401
+            assert _request(app.app, "/api/now", {"authorization": f"Bearer {mine}"})[0] == 200
+            assert _request(app.app, "/api/now?token=display-guess")[0] == 401
+            assert _request(app.app, "/api/now")[0] == 401
+            assert _request(app.app, "/display")[0] == 200, "the page itself needs nothing"
+
+            # The event stream takes a display token, and a wrong one is refused.
+            status, head, body = _request(app.app, f"/api/events?{q}")
+            assert status == 200 and head["content-type"].startswith("text/event-stream")
+            assert body.startswith(b"event: hello"), body
+            assert _request(app.app, "/api/events?token=display-nope")[0] == 401
+
+            # Nothing plays: the cover answers as `idle` asks.
+            cover = f"/api/rooms/{room.id}/cover?{q}"
+            assert _request(app.app, cover)[0] == 204, "the default"
+            assert _request(app.app, cover + "&idle=404")[0] == 404
+            status, head, body = _request(app.app, cover + "&idle=image&size=64")
+            assert status == 200 and head["content-type"] == "image/png" and body == png
+            assert _request(app.app, cover + "&idle=image&size=64",
+                            {"if-none-match": head["etag"]})[0] == 304
+            assert _request(app.app, cover + "&idle=maybe")[0] == 400
+            assert _request(app.app, cover + "&size=5000")[0] == 400
+            assert _request(app.app, f"/api/cover?{q}")[0] == 204, "no room plays"
+            assert fetched == [], "nothing to fetch"
+
+            # A song plays. The same song again keeps its start, a new one starts again.
+            room.task = Running()
+            room.last_level_db = -12
+            info = {"track_key": "k1", "title": "Song", "artist": "A", "album": "LP",
+                    "art_url": apple, "offset": None}
+            asyncio.run(app.listener._on_match(info, "server", [], room))
+            started = room.song_since
+            room.last_match["ts"] -= 30
+            asyncio.run(app.listener._on_match(info, "server", [], room))
+            assert room.song_since == started, "the same song goes on"
+
+            now = json.loads(_request(app.app, f"/api/rooms/{room.id}/now?{q}")[2])
+            assert now["playing"] and now["title"] == "Song" and now["album"] == "LP"
+            assert now["since"] == started and now["art"] == f"/api/rooms/{room.id}/cover"
+            assert now["art_key"] == display.art_key(apple)
+            assert json.loads(_request(app.app, f"/api/now?{q}")[2])["room_id"] == room.id
+
+            status, head, body = _request(app.app, cover + "&size=600")
+            assert status == 200 and head["content-type"] == "image/jpeg", status
+            assert fetched == [display.sized_url(apple, 600)], fetched
+            assert body == b"JPEG:" + fetched[0].encode()
+            assert "no-cache" in head["cache-control"], "kept, but asked again each time"
+            again = _request(app.app, cover + "&size=600", {"if-none-match": head["etag"]})
+            assert again[0] == 304 and again[2] == b"", "the same song costs a 304"
+            assert len(fetched) == 1, "and no second download"
+            assert _request(app.app, f"/api/cover?size=600&{q}")[2] == body, "any room"
+
+            # A size Apple refuses falls back to the cover as Shazam gave it.
+            status, _, body = _request(app.app, cover + "&size=999")
+            assert status == 200 and body == b"JPEG:" + apple.encode(), body
+            # A cover that cannot be fetched is the idle answer, and is not
+            # asked for again at once.
+            room.last_match["art_url"] = "https://example.com/broken.jpg"
+            assert _request(app.app, cover + "&idle=image")[1]["content-type"] == "image/png"
+            tries = len(fetched)
+            assert _request(app.app, cover)[0] == 204
+            assert len(fetched) == tries, "a failure waits RETRY_SECONDS"
+            room.last_match["art_url"] = apple
+
+            # It stops: silence, a quiet record side, the room stopping, or no
+            # match for NOW_PLAYING_STOP_SECONDS.
+            room.last_level_db = -99
+            assert not json.loads(_request(app.app, f"/api/rooms/{room.id}/now?{q}")[2])["playing"]
+            assert _request(app.app, cover)[0] == 204
+            room.last_level_db = -12
+            room.quiet = True
+            assert not display.playing(room, time.time())
+            room.quiet = False
+            room.last_match["ts"] = int(time.time()) - config.NOW_PLAYING_STOP_SECONDS
+            assert not display.playing(room, time.time())
+            room.known_until = time.monotonic() + 30
+            assert display.playing(room, time.time()), "a known song is not asked about"
+            room.known_until = 0.0
+            room.last_match["ts"] = int(time.time())
+            assert display.playing(room, time.time())
+            room.task = None
+            assert not display.playing(room, time.time()), "stopped listening"
+            assert json.loads(_request(app.app, f"/api/now?{q}")[2]) == app._nothing_playing()
+
+            # Revoked, it reads nothing.
+            accounts.delete_display(made["id"])
+            assert _request(app.app, f"/api/rooms/{room.id}/now?{q}")[0] == 401
+            assert _request(app.app, cover)[0] == 401
+        finally:
+            config.DB_PATH, display._fetch, app.listener.rooms = saved
+            display._covers.clear()
+            display._failed.clear()
+
+    # A display needs a name, so the list in Settings says which screen is which.
+    try:
+        accounts.create_display("  ")
+        raise AssertionError("a display needs a name")
+    except ValueError:
+        pass
 
 
 if __name__ == "__main__":

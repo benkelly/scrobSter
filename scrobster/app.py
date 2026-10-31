@@ -4,6 +4,9 @@ A request is identified in this order: a bearer token, then a session cookie,
 then Home Assistant ingress. Ingress is trusted because Home Assistant has
 already signed the user in, and its documentation says an add-on must not ask
 again.
+
+A display token reads what the rooms play and nothing else, see
+require_viewer().
 """
 import asyncio
 import contextlib
@@ -11,13 +14,14 @@ import json
 import logging
 import pathlib
 import secrets
+import time
 
 import pylast
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
-from . import accounts, config, db, events, mqtt, rooms, scrobble
+from . import accounts, config, db, display, events, mqtt, rooms, scrobble
 from . import __version__
 from .listener import (REQUEST_WINDOW_SECONDS, SILENT_DBFS, Listener, RateLimited,
                        decode_to_wav, list_devices, peak_dbfs, probe_level)
@@ -98,6 +102,26 @@ def require_admin(request: Request) -> dict:
     if not user["is_admin"]:
         raise HTTPException(403, "this needs an administrator")
     return user
+
+
+def require_viewer(request: Request) -> dict:
+    """Who may read what the rooms play: {"user": ...} for anybody signed in,
+    or {"display": ...} for a display token.
+
+    Only these routes take a display token, and only they take a token in
+    `?token=`, because a display such as ESPHome often cannot set a header.
+    A personal token in a URL would be too easily leaked, so it is not read
+    from there.
+    """
+    user = current_user(request)
+    if user:
+        return {"user": user}
+    header = request.headers.get("authorization", "")
+    token = header[7:] if header.startswith("Bearer ") else request.query_params.get("token")
+    screen = accounts.display_by_token(token)
+    if screen:
+        return {"display": screen}
+    raise HTTPException(401, "sign in first, or use a display token")
 
 
 def _public(user) -> dict:
@@ -344,18 +368,35 @@ def visible_event(event: dict, user: dict) -> dict | None:
     return out
 
 
+def display_event(event: dict) -> dict | None:
+    """What a display token may see of an event: that a room heard a song, or
+    that the rooms or listening changed. It then reads /api/rooms/{id}/now."""
+    kind = event["kind"]
+    if kind == "match" and event["room_id"] is not None:
+        return {"kind": kind, "ts": event["ts"], "room_id": event["room_id"]}
+    if kind in ("rooms", "listening"):
+        return {"kind": kind, "ts": event["ts"]}
+    return None
+
+
 def _sse(kind, data) -> str:
     return f"event: {kind}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n"
 
 
 @app.get("/api/events")
-async def event_stream(request: Request, user: dict = Depends(require_user)):
+async def event_stream(request: Request, viewer: dict = Depends(require_viewer)):
     """What happens, as it happens, as server-sent events. Each event is named
     by its kind, see events.py. `resync` means some were lost, so read
-    /api/status again."""
+    /api/status again. A display token sees only display_event()."""
+    user = viewer.get("user")
+
+    def visible(event):
+        return visible_event(event, user) if user else display_event(event)
+
     async def stream():
         with events.subscribe() as sub:
-            yield _sse("hello", {"version": __version__, "user_id": user["id"]})
+            yield _sse("hello", {"version": __version__,
+                                 "user_id": user["id"] if user else None})
             while not await request.is_disconnected():
                 happened = await sub.wait(EVENTS_KEEPALIVE_SECONDS)
                 if sub.dropped:
@@ -365,7 +406,7 @@ async def event_stream(request: Request, user: dict = Depends(require_user)):
                 if not happened:
                     yield ": keepalive\n\n"
                 for event in happened:
-                    shown = visible_event(event, user)
+                    shown = visible(event)
                     if shown is not None:
                         yield _sse(shown["kind"], shown)
     # No buffering on the way, Home Assistant ingress and nginx included.
@@ -477,6 +518,115 @@ async def room_member(room_id: int, body: dict, user: dict = Depends(require_use
         raise HTTPException(404, "no such room")
     rooms.set_member(room_id, user["id"], bool(body.get("on")))
     return {"rooms": rooms.rooms_of(user["id"])}
+
+
+# --- what a display shows ------------------------------------------------------------
+# Each of these takes a display token, see require_viewer().
+
+IDLE_CHOICES = ("204", "404", "image")
+_NO_STORE = {"Cache-Control": "no-store"}
+
+
+def _live_room(room_id):
+    room = listener.rooms.get(room_id)
+    if room is None:
+        raise HTTPException(404, "no such room")
+    return room
+
+
+def _nothing_playing() -> dict:
+    return {"room_id": None, "room": None, "playing": False, "artist": None, "title": None,
+            "album": None, "since": None, "heard": None, "art": None, "art_key": None}
+
+
+@app.get("/api/rooms/{room_id}/now")
+async def room_now(room_id: int, viewer: dict = Depends(require_viewer)):
+    """The song a room plays, for a display. Only while it plays."""
+    return JSONResponse(display.now_playing(_live_room(room_id), time.time()),
+                        headers=_NO_STORE)
+
+
+@app.get("/api/now")
+async def any_now(viewer: dict = Depends(require_viewer)):
+    """The same, for whichever room matched last of those that play."""
+    room = display.latest_room(listener.rooms.values(), time.time())
+    return JSONResponse(display.now_playing(room, time.time()) if room
+                        else _nothing_playing(), headers=_NO_STORE)
+
+
+def _same_etag(request: Request, etag: str) -> bool:
+    asked = request.headers.get("if-none-match", "")
+    return any(tag.strip().removeprefix("W/") in (etag, "*") for tag in asked.split(","))
+
+
+def _image(request: Request, kind: str, data: bytes, etag: str) -> Response:
+    # The URL stays while the picture changes, so a client keeps its copy but
+    # asks every time, and gets a 304 while the song is the same.
+    headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
+    if _same_etag(request, etag):
+        return Response(status_code=304, headers=headers)
+    return Response(data, media_type=kind, headers=headers)
+
+
+async def _cover_response(request, room, size, idle) -> Response:
+    if idle not in IDLE_CHOICES:
+        raise HTTPException(400, f"idle must be one of {', '.join(IDLE_CHOICES)}")
+    low, high = display.SIZE_RANGE
+    if size is not None and not low <= size <= high:
+        raise HTTPException(400, f"size must be between {low} and {high}")
+    art = None
+    if room and display.playing(room, time.time()):
+        art = room.last_match.get("art_url")
+    found = await display.room_cover(art, size) if art else None
+    if found:
+        return _image(request, *found)
+    if idle == "image":
+        return _image(request, "image/png", display.idle_png(size or 400),
+                      f'"idle-{size or 400}"')
+    if idle == "404":
+        raise HTTPException(404, "nothing is playing", headers=_NO_STORE)
+    return Response(status_code=204, headers=_NO_STORE)
+
+
+@app.get("/api/rooms/{room_id}/cover")
+async def room_cover(request: Request, room_id: int, size: int | None = None,
+                     idle: str = "204", viewer: dict = Depends(require_viewer)):
+    """The cover of the song a room plays, as an image. `size` asks for that
+    many pixels square, where the cover's host allows it. While nothing plays,
+    or the song has no cover, `idle` chooses the answer: 204, 404, or `image`,
+    a black square."""
+    return await _cover_response(request, _live_room(room_id), size, idle)
+
+
+@app.get("/api/cover")
+async def any_cover(request: Request, size: int | None = None, idle: str = "204",
+                    viewer: dict = Depends(require_viewer)):
+    """The same, for the room /api/now picks."""
+    room = display.latest_room(listener.rooms.values(), time.time())
+    return await _cover_response(request, room, size, idle)
+
+
+@app.get("/api/displays")
+async def displays(admin: dict = Depends(require_admin)):
+    """The display tokens, without the tokens, which are not kept."""
+    return accounts.list_displays()
+
+
+@app.post("/api/displays")
+async def add_display(body: dict, admin: dict = Depends(require_admin)):
+    """A new display token. The answer is the only time it is shown."""
+    try:
+        made = accounts.create_display(body.get("name"))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    log.info("display token %r made by %s", made["name"], admin["username"])
+    return made
+
+
+@app.delete("/api/displays/{display_id}")
+async def remove_display(display_id: int, admin: dict = Depends(require_admin)):
+    accounts.delete_display(display_id)
+    return {"ok": True}
 
 
 # --- how often to ask Shazam, for an administrator ----------------------------------
@@ -645,6 +795,12 @@ async def icon():
 @app.get("/login")
 async def login_page():
     return FileResponse(_static / "login.html")
+
+
+@app.get("/display")
+async def display_page():
+    """A full-screen cover for a tablet or a screen by the hi-fi."""
+    return FileResponse(_static / "display.html")
 
 
 @app.get("/")
