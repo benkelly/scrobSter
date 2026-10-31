@@ -1,0 +1,17 @@
+name: Feature request
+description: Something scrobSter could do that it does not do yet.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you want to do
+      description: The problem or the use, not only the solution. For example, the input or the service you use.
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: How it could work
+      description: Optional. A setting, a page, an API route, an MQTT entity.

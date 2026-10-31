@@ -1,0 +1,86 @@
+name: Bug report
+description: Something does not work as the README says it should.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. The more of this you fill in, the faster it gets fixed.
+
+        **Redact before you post.** Remove service tokens, session keys, API tokens,
+        passwords, and camera URLs with a password or a token in them. scrobSter
+        cleans a camera password out of its own errors, but a URL or a `.env` you
+        paste here is not cleaned.
+
+  - type: input
+    id: version
+    attributes:
+      label: scrobSter version
+      description: >-
+        The `version` field of `GET /api/status`. Signed in, open
+        `http://your-host:8000/api/status` in the browser. The image tag or the
+        add-on page also shows it.
+      placeholder: "0.6.2"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: Install method
+      options:
+        - Docker / docker compose
+        - Helm
+        - Home Assistant add-on
+        - Bare Python (venv, or the systemd unit)
+    validations:
+      required: true
+
+  - type: input
+    id: host
+    attributes:
+      label: Host hardware and OS, with `uname -m`
+      description: For the add-on, the Home Assistant hardware and the output of `uname -m` in its terminal.
+      placeholder: "Raspberry Pi 3B, Raspberry Pi OS 12 (32-bit), armv7l"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: room
+    attributes:
+      label: Room type
+      description: The input of the room that has the problem, if it is about a room.
+      options:
+        - Server mic
+        - USB or line-in (a turntable, a mixer, a sound card)
+        - Camera or stream (RTSP, RTSPS, HTTP)
+        - Browser mic
+        - Not about a room
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+      description: Include the steps, if you can make it happen again.
+    validations:
+      required: true
+
+  - type: input
+    id: level
+    attributes:
+      label: The room's level
+      description: >-
+        The level the Rooms tab shows for that room while music plays, or the
+        result of **Test level**. Near -91 dB means the device is silent.
+      placeholder: "-22 dB"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: >-
+        `docker logs scrobster`, `kubectl logs deploy/scrobster`, the add-on's
+        Log tab, or `journalctl -u scrobster`. Redact them first.
+      render: shell

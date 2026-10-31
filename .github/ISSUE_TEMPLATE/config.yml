@@ -1,0 +1,6 @@
+# Blank issues stay on, for anything the forms do not fit, a thank-you included.
+blank_issues_enabled: true
+contact_links:
+  - name: Questions and "show your setup"
+    url: https://github.com/benkelly/scrobSter/discussions
+    about: Ask how to set something up, or show the rooms and inputs you use.
