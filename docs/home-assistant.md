@@ -9,6 +9,22 @@ The app also reads `/data/options.json` directly, which is where the Supervisor
 writes add-on options. Each key matches an environment variable, in either case.
 No wrapper script is needed.
 
+This is how the add-on connects to Home Assistant:
+
+```mermaid
+flowchart TD
+    you["You, signed in to Home Assistant"] -- ingress --> addon["scrobSter add-on"]
+    sup["Supervisor"] -- "/data/options.json" --> addon
+    sup -- "broker address and login" --> addon
+    mic["Microphone"] --> pulse["Home Assistant audio, PulseAudio"]
+    pulse -- "ALSA, via asound.conf" --> addon
+    addon -- "discovery and states" --> broker["Mosquitto broker"]
+    broker -- "switch and number commands" --> addon
+    broker --> ha["Devices and entities in Home Assistant"]
+```
+
+Ingress signs you in as the owner, so the page asks for no password.
+
 ## Devices over MQTT
 
 scrobSter publishes its rooms and users to Home Assistant through MQTT

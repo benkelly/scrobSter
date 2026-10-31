@@ -16,6 +16,23 @@ input: a microphone on the server, or a camera's RTSP or RTSPS stream. See
 [shazamio](https://github.com/shazamio/shazamio) builds an audio signature
 locally and asks the Shazam API for a match.
 
+This is the whole path, from input to scrobble. [Architecture](docs/architecture.md)
+shows one room's cycle, and how rooms share Shazam.
+
+```mermaid
+flowchart TD
+    mic["Sound card on the server"] --> cap
+    cam["Camera or stream"] --> cap
+    cap["ffmpeg records a clip in each room"] --> level{"Silent or quiet?"}
+    level -- "yes, ask nothing" --> cap
+    level -- no --> shazam["Shazam. Only the fingerprint, made locally, is sent"]
+    browser["Microphone in a browser"] -- "POST /api/match" --> shazam
+    shazam -- match --> enrich["MusicBrainz IDs, from the ISRC"]
+    enrich --> dedupe{"New play for this user?"}
+    dedupe -- yes --> services["Each user's Last.fm, Libre.fm, ListenBrainz, Maloja"]
+    shazam -- "match and scrobble events" --> events["MQTT to Home Assistant, and GET /api/events"]
+```
+
 A match does two things. It marks the track as playing now, so your profile
 shows the live "scrobbling now" line while the song continues. It also scrobbles
 the track once per play. A track that keeps playing is not scrobbled again, but
@@ -98,6 +115,8 @@ Test recognition with a file first:
 - **[Home Assistant](docs/home-assistant.md)**: the add-on and
   [Devices over MQTT](docs/home-assistant.md#devices-over-mqtt).
 - **[API](docs/api.md)**: every route, and a REST sensor for Home Assistant.
+- **[Architecture](docs/architecture.md)**: diagrams of one room's cycle, and
+  of rooms sharing the Shazam rate limit.
 - **[Troubleshooting](docs/troubleshooting.md)**: no match, a turntable's
   run-out groove, macOS problems, and
   [Recognition limits (measured)](docs/troubleshooting.md#recognition-limits-measured).
