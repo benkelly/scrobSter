@@ -13,6 +13,28 @@ under Users, and each person connects their own services.
   key for that user alone.
 - **Only an administrator starts or stops listening**, and adds or changes rooms.
 - **Each user gets an API token** in Settings, for Home Assistant and scripts.
+- **A display gets a display token**, which only reads what the rooms play. See
+  [Displays](#displays).
+
+## Displays
+
+A tablet, a Raspberry Pi with a screen, an ESP32 with an LCD, or a Home
+Assistant dashboard can show the cover of what a room plays. An administrator
+makes a link for it under Settings, Displays, or with a room's Display button
+on the Rooms tab. Give it a name, such as "Living room tablet", and choose a
+room. The page shows two links, once:
+
+- **Display page**, `/display?room=1&token=...`, a full-screen cover with the
+  title and artist, for a browser. Add `&idle=blank` for a black screen instead
+  of a clock while nothing plays.
+- **Cover image**, `/api/rooms/1/cover?size=480&idle=image&token=...`, the
+  picture alone, for ESPHome or a Home Assistant image.
+
+The token can read what the rooms play, and nothing else: no history, no
+accounts, no settings, no camera URLs. It still goes in a URL, so revoke it in
+the same list when a screen goes away. Only its hash is kept, so a lost one
+cannot be shown again: make a new one. [The API](api.md#displays) lists every
+option.
 
 Each person connects their services under Settings. A secret is never shown
 again once saved:

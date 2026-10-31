@@ -156,6 +156,34 @@
       <p class="note">Replacing the token signs out every script that uses the old one.</p>
     </div>
 
+    <div id="displays-section" class="hidden">
+      <h2>Displays</h2>
+      <div class="card">
+        <p class="muted small" style="margin-top:0">A tablet or a screen by the hi-fi
+          that shows the cover of what a room plays. Its token reads what the rooms
+          play and nothing else, so its link is safe to leave on the screen.</p>
+        <div id="displays"></div>
+        <form class="stack" id="displayform" autocomplete="off" style="margin-top:.75rem">
+          <div class="row" style="align-items:flex-end">
+            <label class="grow">Name<input id="display_name" maxlength="60"
+                                           placeholder="Living room tablet" required></label>
+            <label>Room<select id="display_room"></select></label>
+          </div>
+          <div class="row"><button type="submit">Make a display link</button>
+            <a id="display_preview" href="display" target="_blank" rel="noopener" class="small">Open here</a></div>
+        </form>
+        <div id="displaymade" class="hidden">
+          <p class="small ok">Copy these now. The token is not shown again.</p>
+          <label>Display page</label>
+          <div class="token"><code id="display_page_url"></code>
+            <button class="ghost small" data-copy="display_page_url">Copy</button></div>
+          <label>Cover image, for ESPHome or Home Assistant</label>
+          <div class="token"><code id="display_cover_url"></code>
+            <button class="ghost small" data-copy="display_cover_url">Copy</button></div>
+        </div>
+      </div>
+    </div>
+
     <h2>Password</h2>
     <form class="card stack" id="pwform" autocomplete="on">
       <label>Current password<input id="pw_current" type="password" autocomplete="current-password" required></label>
@@ -267,7 +295,7 @@ function showView(name) {
   if (!VIEWS.includes(name) || (name === "users" && !me?.is_admin)) name = "listen";
   $$('nav button').forEach(x => x.setAttribute("aria-selected", String(x.dataset.view === name)));
   VIEWS.forEach(v => $(`#view-${v}`).classList.toggle("hidden", v !== name));
-  if (name === "settings") loadServices();
+  if (name === "settings") { loadServices(); if (me?.is_admin) loadDisplays(); }
   if (name === "rooms") { refresh(); if (me?.is_admin) { loadAudio(); loadRates(); } }
   if (name === "users") loadUsers();
 }
@@ -350,6 +378,7 @@ function roomCard(r) {
     <div class="between small room-live" data-live></div>
     ${me?.is_admin ? `<div class="row small room-admin">
       ${r.input ? `<code class="grow">${esc(r.input)}</code>` : ""}
+      <button class="ghost small" data-display="${r.id}" title="Show what ${esc(r.name)} plays on a screen">Display</button>
       <button class="ghost small" data-enable="${r.id}">${r.enabled ? "Turn off" : "Turn on"}</button>
       <button class="ghost small" data-edit="${r.id}">Edit</button>
       <button class="danger small" data-remove="${r.id}">Remove</button></div>` : ""}
@@ -408,7 +437,8 @@ async function pollLevels() {
 
 // One set of handlers for every card, so a rebuilt card needs none of its own.
 const roomOf = el => {
-  const id = +(el.dataset.member || el.dataset.enable || el.dataset.edit || el.dataset.remove);
+  const id = +(el.dataset.member || el.dataset.enable || el.dataset.edit || el.dataset.remove
+               || el.dataset.display);
   return roomsKnown.find(r => r.id === id);
 };
 $("#rooms").addEventListener("change", async e => {
@@ -424,10 +454,11 @@ $("#rooms").addEventListener("change", async e => {
   finally { box.disabled = false; }
 });
 $("#rooms").addEventListener("click", e => {
-  const b = e.target.closest("[data-enable], [data-edit], [data-remove]");
+  const b = e.target.closest("[data-enable], [data-edit], [data-remove], [data-display]");
   if (!b) return;
   const r = roomOf(b);
   if (b.dataset.edit) return editRoom(r);
+  if (b.dataset.display) return newDisplay(r);
   if (b.dataset.enable) return busy(b, async () => {
     try {
       await send(`api/rooms/${r.id}`, "PUT", {enabled: !r.enabled});
@@ -1082,6 +1113,83 @@ $("#pwform").onsubmit = e => {
     } catch (err) { setNote(note, err.message, "err"); }
   });
 };
+
+// --- displays: a token that reads what the rooms play, shown once ---
+let madeToken = null;
+const absolute = path => new URL(path, location.href).href;
+function displayLinks() {
+  const room = $("#display_room").value;
+  const q = room ? `room=${room}&` : "";
+  $("#display_preview").href = room ? `display?room=${room}` : "display";
+  if (!madeToken) return;
+  const token = encodeURIComponent(madeToken);
+  $("#display_page_url").textContent = absolute(`display?${q}token=${token}`);
+  $("#display_cover_url").textContent = absolute(
+    `${room ? `api/rooms/${room}/cover` : "api/cover"}?size=480&idle=image&token=${token}`);
+}
+function paintDisplayRooms(chosen) {
+  const sel = $("#display_room");
+  const keep = chosen ?? sel.value;
+  sel.innerHTML = `<option value="">Whichever room plays</option>` + roomsKnown.map(r =>
+    `<option value="${r.id}">${esc(r.name)}</option>`).join("");
+  sel.value = roomsKnown.some(r => String(r.id) === String(keep)) ? String(keep) : "";
+  displayLinks();
+}
+async function loadDisplays() {
+  $("#displays-section").classList.remove("hidden");
+  if (!roomsKnown.length) { try { roomsKnown = await api("api/rooms"); } catch {} }
+  paintDisplayRooms();
+  let list;
+  try { list = await api("api/displays"); } catch (e) { toast(e.message, "err"); return; }
+  $("#displays").innerHTML = list.length ? list.map(d => `<div class="between small" style="padding:.35rem 0">
+      <span><b>${esc(d.name)}</b> <span class="muted">&middot; made ${when(d.created_at)}
+        &middot; ${d.last_seen ? `last seen ${when(d.last_seen)}` : "never used"}</span></span>
+      <button class="danger small" data-revoke="${d.id}" data-name="${esc(d.name)}">Revoke</button></div>`).join("")
+    : `<span class="muted small">No displays yet.</span>`;
+  $$("[data-revoke]").forEach(b => b.onclick = () => {
+    if (!confirm(`Revoke ${b.dataset.name}? That screen stops showing what plays.`)) return;
+    busy(b, async () => {
+      try { await api(`api/displays/${b.dataset.revoke}`, {method: "DELETE"});
+            toast(`${b.dataset.name} revoked`); loadDisplays(); }
+      catch (e) { toast(e.message, "err"); }
+    });
+  });
+}
+// From a room's Display button: the form, ready for that room.
+function newDisplay(r) {
+  location.hash = "settings";
+  paintDisplayRooms(r.id);
+  $("#display_name").value = `${r.name} display`;
+  // After the hash change has shown the tab.
+  setTimeout(() => {
+    $("#displays-section").scrollIntoView({behavior: "smooth", block: "start"});
+    $("#display_name").focus({preventScroll: true});
+  }, 50);
+}
+$("#display_room").onchange = () => displayLinks();
+$("#displayform").onsubmit = e => {
+  e.preventDefault();
+  busy(e.target.querySelector("button[type=submit]"), async () => {
+    try {
+      const made = await send("api/displays", "POST", {name: $("#display_name").value});
+      madeToken = made.token;
+      displayLinks();
+      $("#displaymade").classList.remove("hidden");
+      $("#display_name").value = "";
+      toast(`${made.name} made`, "ok");
+      loadDisplays();
+    } catch (err) { toast(err.message, "err"); }
+  });
+};
+$$("[data-copy]").forEach(b => b.onclick = async () => {
+  const el = $("#" + b.dataset.copy);
+  try { await navigator.clipboard.writeText(el.textContent); toast("Copied", "ok"); }
+  catch {
+    const range = document.createRange(); range.selectNodeContents(el);
+    getSelection().removeAllRanges(); getSelection().addRange(range);
+    toast("Select the link and copy it");
+  }
+});
 
 // --- users ---
 async function loadUsers() {

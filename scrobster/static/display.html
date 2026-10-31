@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<meta name="referrer" content="no-referrer">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<title>scrobSter display</title>
+<link rel="icon" href="icon.png" type="image/png">
+<link rel="apple-touch-icon" href="icon.png">
+<!-- Options, in the URL:
+  ?room=1        the room to show. Without it, whichever room matched last
+  ?token=...     a display token from Settings, when this screen is not signed in
+  ?idle=clock    what shows while nothing plays: clock (the default) or blank
+  Written for old tablets too: no build step, nothing newer than Safari 10. -->
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body {
+    color: #f2f2f2;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -webkit-user-select: none; user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  body.still { cursor: none; }
+
+  /* The cover, blurred and dark, behind everything. */
+  #backdrop {
+    position: fixed; top: -10%; left: -10%; width: 120%; height: 120%;
+    background: #000 center / cover no-repeat;
+    -webkit-filter: blur(60px) saturate(1.4); filter: blur(60px) saturate(1.4);
+    opacity: 0; transition: opacity 2s ease;
+  }
+  #shade {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0, 0, 0, .55);
+    background: radial-gradient(ellipse at center, rgba(0,0,0,.35) 0%, rgba(0,0,0,.8) 100%);
+  }
+  body.playing #backdrop.on { opacity: .55; }
+
+  .layer {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    display: -webkit-box; display: -webkit-flex; display: flex;
+    -webkit-box-align: center; -webkit-align-items: center; align-items: center;
+    -webkit-box-pack: center; -webkit-justify-content: center; justify-content: center;
+    transition: opacity 1.5s ease, -webkit-transform 3s ease; transition: opacity 1.5s ease, transform 3s ease;
+  }
+
+  /* Playing: cover beside the words in landscape, above them in portrait. */
+  #now { opacity: 0; padding: 6vmin; box-sizing: border-box; }
+  body.playing #now { opacity: 1; }
+  #art {
+    position: relative; -webkit-flex: none; flex: none;
+    width: 74vh; height: 74vh; max-width: 50vw; max-height: 50vw;
+    border-radius: 1.2vmin; overflow: hidden;
+    background: #16181c;
+    box-shadow: 0 3vmin 8vmin rgba(0, 0, 0, .6), 0 0 0 1px rgba(255, 255, 255, .06);
+  }
+  #art img {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    opacity: 0; transition: opacity .8s ease;
+  }
+  #art img.shown { opacity: 1; }
+  #art .none {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    display: -webkit-flex; display: flex; -webkit-align-items: center; align-items: center;
+    -webkit-justify-content: center; justify-content: center;
+    font-size: 22vmin; color: rgba(255, 255, 255, .12);
+    background: linear-gradient(135deg, #1d2128, #0e1013);
+  }
+  #meta { margin-left: 6vmin; max-width: 40vw; min-width: 0; }
+  #room {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 1.9vmin; letter-spacing: .25em; text-transform: uppercase;
+    color: rgba(255, 255, 255, .5); margin: 0 0 2.2vmin;
+  }
+  #room:before {
+    content: ""; display: inline-block; width: 1.1vmin; height: 1.1vmin; border-radius: 50%;
+    background: #3ddc84; margin-right: 1.4vmin; vertical-align: .1vmin;
+    box-shadow: 0 0 1.6vmin rgba(61, 220, 132, .7);
+  }
+  #title {
+    font-size: 6.4vmin; line-height: 1.1; font-weight: 700; letter-spacing: -.01em; margin: 0;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  #artist {
+    font-size: 4.2vmin; line-height: 1.2; font-weight: 400; margin: 1.6vmin 0 0;
+    color: rgba(255, 255, 255, .85);
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  #album {
+    font-size: 2.9vmin; line-height: 1.3; margin: 1.4vmin 0 0; color: rgba(255, 255, 255, .5);
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+
+  @media (orientation: portrait) {
+    #now { -webkit-box-orient: vertical; -webkit-flex-direction: column; flex-direction: column; }
+    #art { width: 82vw; height: 82vw; max-width: 56vh; max-height: 56vh; }
+    #meta { margin: 6vmin 0 0; max-width: 86vw; text-align: center; }
+    #title { font-size: 7.4vmin; }
+    #artist { font-size: 5vmin; }
+    #album { font-size: 3.6vmin; }
+    #room { font-size: 2.6vmin; }
+  }
+
+  /* Idle: a dim clock that moves now and then, or nothing at all. */
+  #idle {
+    opacity: 0; -webkit-box-orient: vertical; -webkit-flex-direction: column; flex-direction: column;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: rgba(255, 255, 255, .42);
+  }
+  body.idle #idle { opacity: 1; }
+  body.blank #idle { opacity: 0; }
+  #clock {
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "Segoe UI", Roboto, Arial, sans-serif;
+    font-size: 20vmin; font-weight: 200; letter-spacing: -.01em; line-height: 1;
+    -webkit-font-feature-settings: "tnum"; font-feature-settings: "tnum"; font-variant-numeric: tabular-nums;
+  }
+  #date { font-size: 2.6vmin; letter-spacing: .2em; text-transform: uppercase; margin-top: 2.4vmin;
+          color: rgba(255, 255, 255, .28); }
+
+  #msg {
+    position: fixed; left: 0; right: 0; bottom: 5vmin; text-align: center; padding: 0 6vmin;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 2.2vmin; color: rgba(255, 255, 255, .55);
+  }
+</style>
+</head>
+<body class="idle still">
+<div id="backdrop"></div>
+<div id="shade"></div>
+<div id="now" class="layer" aria-live="polite">
+  <div id="art"><div class="none" aria-hidden="true">&#9834;</div><img id="cover" alt=""></div>
+  <div id="meta">
+    <p id="room"></p>
+    <h1 id="title"></h1>
+    <p id="artist"></p>
+    <p id="album"></p>
+  </div>
+</div>
+<div id="idle" class="layer" aria-hidden="true"><div id="clock"></div><div id="date"></div></div>
+<div id="msg" role="status"></div>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (id) { return document.getElementById(id); };
+  var params = {};
+  location.search.replace(/^\?/, "").split("&").forEach(function (pair) {
+    if (!pair) return;
+    var kv = pair.split("=");
+    params[decodeURIComponent(kv[0])] = decodeURIComponent((kv[1] || "").replace(/\+/g, " "));
+  });
+  var room = /^\d+$/.test(params.room || "") ? params.room : null;
+  var token = params.token || "";
+  var idleMode = params.idle === "blank" ? "blank" : "clock";
+
+  var POLL_MS = 5000;      // without server-sent events
+  var CHECK_MS = 20000;    // with them, for a song that stops without an event
+  var DRIFT_MS = 60000;    // move a little, so no pixel stays lit the same way
+
+  function withToken(path) {
+    if (!token) return path;
+    return path + (path.indexOf("?") < 0 ? "?" : "&") + "token=" + encodeURIComponent(token);
+  }
+  var nowUrl = room ? "api/rooms/" + room + "/now" : "api/now";
+
+  function say(text) { $("msg").textContent = text || ""; }
+
+  // --- what plays ---
+  var shown = null, coverKey = null, loading = false;
+
+  function coverSize() {
+    var box = $("art").getBoundingClientRect();
+    var px = Math.max(box.width, box.height) * (window.devicePixelRatio || 1);
+    return Math.max(100, Math.min(1200, Math.ceil(px / 100) * 100));
+  }
+
+  function setCover(now) {
+    var key = now.art_key ? now.room_id + ":" + now.art_key : null;
+    if (key === coverKey) return;
+    coverKey = key;
+    var img = $("cover");
+    img.className = "";
+    if (!key) { $("backdrop").className = ""; return; }
+    var src = withToken("api/rooms/" + now.room_id + "/cover?size=" + coverSize()
+                        + "&v=" + encodeURIComponent(now.art_key));
+    var next = new Image();
+    next.onload = function () {
+      if (coverKey !== key) return;
+      img.src = src; img.className = "shown";
+      $("backdrop").style.backgroundImage = "url(\"" + src + "\")";
+      $("backdrop").className = "on";
+    };
+    next.onerror = function () { if (coverKey === key) $("backdrop").className = ""; };
+    next.src = src;
+  }
+
+  function paint(now) {
+    var playing = !!(now && now.playing);
+    document.body.className = (playing ? "playing" : "idle " + idleMode)
+      + (document.body.className.indexOf("still") >= 0 ? " still" : "");
+    if (!playing) { document.title = "scrobSter display"; return; }
+    var line = now.title + "\n" + now.artist + "\n" + (now.album || "") + "\n" + now.room;
+    if (line !== shown) {
+      shown = line;
+      $("title").textContent = now.title || "";
+      $("artist").textContent = now.artist || "";
+      $("album").textContent = now.album && now.album !== now.title ? now.album : "";
+      $("room").textContent = now.room || "";
+      document.title = now.title + " · " + now.artist;
+    }
+    setCover(now);
+  }
+
+  function load() {
+    if (loading) return;
+    loading = true;
+    var xhr = new XMLHttpRequest();
+    xhr.open("GET", withToken(nowUrl), true);
+    xhr.withCredentials = true;
+    xhr.timeout = 10000;
+    xhr.onload = function () {
+      loading = false;
+      if (xhr.status === 200) {
+        say("");
+        try { paint(JSON.parse(xhr.responseText)); } catch (e) {}
+      } else if (xhr.status === 401) {
+        paint(null);
+        say(token ? "This display link no longer works. Make a new one under Settings → Displays."
+                  : "Add ?token= with a display token from Settings → Displays, or sign in on this screen.");
+      } else if (xhr.status === 404) {
+        paint(null);
+        say("There is no room " + room + ".");
+      }
+    };
+    xhr.onerror = xhr.ontimeout = function () { loading = false; };
+    xhr.send();
+  }
+
+  // --- updates: server-sent events where they work, else a poll ---
+  var events = null, timer = null;
+  function poll(ms) {
+    if (timer) clearInterval(timer);
+    timer = setInterval(function () { if (!document.hidden) load(); }, ms);
+  }
+  function follow() {
+    if (!window.EventSource) { poll(POLL_MS); return; }
+    events = new EventSource(withToken("api/events"), {withCredentials: true});
+    var onRoom = function (e) {
+      try { var data = JSON.parse(e.data); } catch (err) { return; }
+      if (!room || String(data.room_id) === room) load();
+    };
+    events.addEventListener("match", onRoom);
+    ["hello", "rooms", "listening", "resync"].forEach(function (kind) {
+      events.addEventListener(kind, load);
+    });
+    // A refused stream closes for good. Then poll instead.
+    events.onerror = function () {
+      if (events.readyState === 2) { events = null; poll(POLL_MS); }
+    };
+    poll(CHECK_MS);
+  }
+
+  // --- idle clock ---
+  function pad(n) { return (n < 10 ? "0" : "") + n; }
+  function tick() {
+    var d = new Date();
+    $("clock").textContent = pad(d.getHours()) + ":" + pad(d.getMinutes());
+    try {
+      $("date").textContent = d.toLocaleDateString(undefined, {weekday: "long", day: "numeric", month: "long"});
+    } catch (e) { $("date").textContent = d.toDateString(); }
+  }
+
+  // --- against burn-in: shift everything a few pixels each minute, the
+  // clock further, since it is the same shape for hours ---
+  function shift(el, range) {
+    var x = Math.round((Math.random() * 2 - 1) * range), y = Math.round((Math.random() * 2 - 1) * range);
+    var t = "translate(" + x + "px," + y + "px)";
+    el.style.webkitTransform = t; el.style.transform = t;
+  }
+  function drift() {
+    var small = Math.min(window.innerWidth, window.innerHeight);
+    shift($("now"), small * 0.012);
+    shift($("idle"), small * 0.18);
+  }
+
+  // --- keep the screen on, where the browser allows it ---
+  var lock = null;
+  function wake() {
+    if (!navigator.wakeLock || document.hidden || lock) return;
+    navigator.wakeLock.request("screen").then(function (l) {
+      lock = l;
+      l.addEventListener("release", function () { lock = null; });
+    }).catch(function () {});
+  }
+
+  // Hide the pointer when it is still. A tap goes full screen where it can.
+  var stillTimer = null;
+  function moved() {
+    document.body.className = document.body.className.replace(/\s*still/g, "");
+    clearTimeout(stillTimer);
+    stillTimer = setTimeout(function () { document.body.className += " still"; }, 3000);
+  }
+  document.addEventListener("mousemove", moved);
+  document.addEventListener("click", function () {
+    wake();
+    var el = document.documentElement;
+    var go = el.requestFullscreen || el.webkitRequestFullscreen;
+    if (go && !(document.fullscreenElement || document.webkitFullscreenElement)) {
+      try { var p = go.call(el); if (p && p.catch) p.catch(function () {}); } catch (e) {}
+    }
+  });
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) { wake(); load(); }
+  });
+
+  tick(); setInterval(tick, 1000);
+  drift(); setInterval(drift, DRIFT_MS);
+  load(); follow(); wake();
+})();
+</script>
+</body>
+</html>

@@ -6,6 +6,9 @@ go to several users with different services.
 
 Schema 3 adds rooms. Each room is one input, a microphone on this machine or a
 camera stream, and each user chooses which rooms scrobble for them.
+
+Schema 4 adds display tokens, which may read what the rooms play and nothing
+else. Only a hash of each is kept.
 """
 import json
 import os
@@ -14,7 +17,7 @@ import sqlite3
 
 from . import config
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def _conn():
@@ -108,6 +111,15 @@ def _create_schema(c):
             ts INTEGER NOT NULL,
             offset REAL,
             PRIMARY KEY (user_id, track_key));
+
+        -- A screen by the hi-fi. Its token reads what the rooms play, nothing
+        -- more, and is kept as a SHA-256 hash, so the database does not hold it.
+        CREATE TABLE IF NOT EXISTS display_tokens(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE,
+            created_at INTEGER NOT NULL,
+            last_seen INTEGER);
         """
     )
 

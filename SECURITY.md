@@ -27,6 +27,10 @@ problem:
 - **Account passwords**, the administrator's included, and the session cookie.
 - **API tokens.** Each user's personal token, and the shared `API_TOKEN`, which
   acts as the owner.
+- **Display tokens** read what each room plays now: its name, the song, and
+  the cover. Nothing else, so a token found in a display's URL cannot read
+  history, accounts, settings or camera URLs. Only their hash is stored. A
+  display token that reads more than that is a security problem.
 - **Camera URLs.** A stream URL can carry the camera's password. The web page
   and the API show it as `***`, and errors are cleaned of it.
 - **The MQTT broker.** Whoever can publish to it can start and stop listening,

@@ -1,7 +1,8 @@
 # API
 
 Every route needs a signed-in session, a personal API token, or a request
-through Home Assistant ingress.
+through Home Assistant ingress. The display routes below also take a display
+token.
 
 | Endpoint | Purpose |
 |---|---|
@@ -21,6 +22,7 @@ through Home Assistant ingress.
 | `GET /api/audio` | the devices ffmpeg can see, and the environment's default. Administrator only |
 | `POST /api/audio/test` `{kind, device, backend, url, room_id}` | record three seconds and report the peak level. Administrator only |
 | `GET/POST/DELETE /api/users` | accounts. Administrator only |
+| `GET /api/displays`, `POST /api/displays` `{name}`, `DELETE /api/displays/{id}` | display tokens. `POST` answers with the token, the only time it is shown. Administrator only |
 
 Home Assistant REST sensor, if you do not use MQTT. Copy the token from Settings:
 
@@ -50,3 +52,25 @@ For a sensor per room, such as "what is playing in the kitchen", use this
       {% set room = value_json.rooms | selectattr('name', 'eq', 'Kitchen') | first %}
       {{ room.last_match.title if room and room.last_match else 'none' }}
 ```
+
+## Displays
+
+A screen by the hi-fi reads these with a display token, made under Settings,
+Displays. The token reads these routes and nothing else. Send it as
+`Authorization: Bearer <token>`, or as `?token=<token>` for a client that cannot
+set a header. Only a display token is read from the URL, never a personal one.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /display?room=1&idle=clock` | a full-screen page: the cover, title, artist and album. Without `room`, whichever room matched last. `idle` is `clock` or `blank`. Add `&token=` on a screen that is not signed in |
+| `GET /api/rooms/{id}/now` | `{room_id, room, playing, artist, title, album, since, heard, art, art_key}`. The song fields are `null` while nothing plays. `since` is when the room started hearing the song, `heard` its last match, `art` the room's cover route, and `art_key` changes with the cover |
+| `GET /api/now` | the same, for whichever room that plays matched last, or `room_id: null` |
+| `GET /api/rooms/{id}/cover?size=600&idle=204` | the cover itself, fetched once per song and kept in memory. It carries an `ETag`, so asking again with `If-None-Match` costs a `304`. `size` is 32 to 1200 pixels square: Apple's covers are fetched at that size, any other is served as it is |
+| `GET /api/cover` | the same, for the room `/api/now` picks |
+| `GET /api/events` | a display token sees only `match` events with their `room_id`, and `rooms` and `listening`. Read `now` again on each |
+
+A room plays from its match until `NOW_PLAYING_STOP_SECONDS` pass without
+another, its last clip is silence or below `QUIET_DBFS`, or it stops listening.
+While nothing plays, or the song has no cover, `idle` chooses what the cover
+route answers: `204` (the default), `404`, or `image`, a black PNG of `size`
+pixels, 400 without one.

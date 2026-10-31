@@ -164,6 +164,20 @@ def is_placeholder(status: int, location: str | None) -> bool | None:
     return "placeholder" in (location or "")
 
 
+async def fetch_image(session, url) -> tuple[str, bytes]:
+    """(content type, bytes) of a cover. Refused when it is not an image, or
+    is larger than MAX_ART_BYTES."""
+    async with session.get(url) as r:
+        r.raise_for_status()
+        kind = r.headers.get("Content-Type", "").split(";")[0].strip()
+        if not kind.startswith("image/"):
+            raise ValueError(f"cover is {kind or 'untyped'}, not an image")
+        image = await r.content.read(MAX_ART_BYTES + 1)
+        if len(image) > MAX_ART_BYTES:
+            raise ValueError("cover is too large")
+    return kind, image
+
+
 async def _maloja_cover(url, key, artist, title, album, art_url) -> str:
     """Give Maloja Shazam's cover, unless it already shows a picture.
 
@@ -186,14 +200,7 @@ async def _maloja_cover(url, key, artist, title, album, art_url) -> str:
             return "pending"
         if not missing:
             return "has one"
-        async with s.get(art_url) as r:
-            r.raise_for_status()
-            kind = r.headers.get("Content-Type", "").split(";")[0].strip()
-            if not kind.startswith("image/"):
-                raise ValueError(f"cover is {kind or 'untyped'}, not an image")
-            image = await r.content.read(MAX_ART_BYTES + 1)
-            if len(image) > MAX_ART_BYTES:
-                raise ValueError("cover is too large")
+        kind, image = await fetch_image(s, art_url)
         b64 = f"data:{kind};base64,{base64.b64encode(image).decode()}"
         if entity == "album":
             body = {"albumtitle": album, "albumartist": [artist]}

@@ -184,6 +184,63 @@ def end_session(token):
         c.execute("DELETE FROM sessions WHERE token=?", (token,))
 
 
+# --- display tokens ----------------------------------------------------------
+# A display's URL ends up in ESPHome YAML, browser history and screenshots, so
+# its token reads what the rooms play and nothing else. It is shown once, when
+# it is made, and only its hash is kept. The prefix tells it from a personal
+# token at a glance.
+
+DISPLAY_PREFIX = "display-"
+# last_seen is written at most this often, as a display asks every few seconds.
+DISPLAY_SEEN_SECONDS = 60
+
+
+def _token_hash(token: str) -> str:
+    # A random token needs no salt or slow hash: there is nothing to guess.
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _display_public(r) -> dict:
+    return {"id": r["id"], "name": r["name"], "created_at": r["created_at"],
+            "last_seen": r["last_seen"]}
+
+
+def create_display(name) -> dict:
+    """A new display token, returned in `token` this once."""
+    name = str(name or "").strip()[:60]
+    if not name:
+        raise ValueError("give the display a name")
+    token = DISPLAY_PREFIX + secrets.token_urlsafe(24)
+    with db._conn() as c:
+        cur = c.execute("INSERT INTO display_tokens(name, token_hash, created_at)"
+                        " VALUES(?,?,?)", (name, _token_hash(token), int(time.time())))
+        display_id = cur.lastrowid
+    return {"id": display_id, "name": name, "token": token}
+
+
+def list_displays() -> list[dict]:
+    with db._conn() as c:
+        return [_display_public(r) for r in
+                c.execute("SELECT * FROM display_tokens ORDER BY id").fetchall()]
+
+
+def delete_display(display_id):
+    with db._conn() as c:
+        c.execute("DELETE FROM display_tokens WHERE id=?", (display_id,))
+
+
+def display_by_token(token):
+    if not token or not token.startswith(DISPLAY_PREFIX):
+        return None
+    now = int(time.time())
+    with db._conn() as c:
+        row = c.execute("SELECT * FROM display_tokens WHERE token_hash=?",
+                        (_token_hash(token),)).fetchone()
+        if row is not None and (row["last_seen"] or 0) < now - DISPLAY_SEEN_SECONDS:
+            c.execute("UPDATE display_tokens SET last_seen=? WHERE id=?", (now, row["id"]))
+    return None if row is None else _display_public(row)
+
+
 # --- per-user service credentials ------------------------------------------
 
 def get_credentials(user_id) -> dict:
