@@ -180,8 +180,9 @@ show_name: false
 show_state: false
 ```
 
-The Cover art entity keeps the last cover after the record stops, today. A
-pending change clears it when the room stops playing.
+The Cover art entity goes unavailable when the record stops, so a stale cover
+never shows. To hide the card then, wrap it in a conditional card; see
+[Cover art for a display](home-assistant.md#cover-art-for-a-display).
 
 **The cover with the words.** A Markdown card reads the sensor's attributes.
 It shows nothing but "Nothing playing" while the room is idle:
@@ -459,8 +460,10 @@ Rooms tab: is it listening, and does it match?
 
 - On ESPHome, check the log for `HTTP result`. Without `idle=image` in the
   link, a `204` keeps the last cover.
-- In Home Assistant, the Cover art entity keeps the last cover after the
-  record stops. Use the Markdown card, which checks the sensor's state.
+- In Home Assistant, the Cover art entity goes unavailable
+  `NOW_PLAYING_STOP_SECONDS` after the last match, not the moment a side
+  ends. Lower that setting for a quicker change, or use the display page,
+  which goes idle on the first silent clip.
 - The room may still hear the last song. While a room hears a song it knows,
   it waits up to `SKIP_KNOWN_SECONDS` before asking Shazam again.
 
