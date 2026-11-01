@@ -679,6 +679,47 @@ def check_enrich():
     assert sent["albumartist"] == ["Artist"]
     assert sent["b64"] == "data:image/jpeg;base64," + base64.b64encode(cover).decode()
 
+    # A cover that arrives in pieces is read to its end, not only its top.
+    big = bytes(range(256)) * 600
+
+    async def slow_cover(request):
+        response = web.StreamResponse(headers={"Content-Type": "image/jpeg"})
+        await response.prepare(request)
+        try:
+            for start in range(0, len(big), 20000):
+                await response.write(big[start:start + 20000])
+                await asyncio.sleep(0.01)
+            await response.write_eof()
+        except ConnectionResetError:
+            pass  # the client stopped reading, as it should past MAX_ART_BYTES
+        return response
+
+    async def fetch_slow(limit):
+        app = web.Application()
+        app.add_routes([web.get("/slow.jpg", slow_cover)])
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        saved = enrich.MAX_ART_BYTES
+        enrich.MAX_ART_BYTES = limit
+        try:
+            async with aiohttp.ClientSession() as session:
+                return await enrich.fetch_image(
+                    session, f"http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}"
+                             "/slow.jpg")
+        finally:
+            enrich.MAX_ART_BYTES = saved
+            await runner.cleanup()
+
+    import aiohttp
+    assert asyncio.run(fetch_slow(len(big))) == ("image/jpeg", big)
+    try:
+        asyncio.run(fetch_slow(len(big) - 1))
+        raise AssertionError("a cover larger than MAX_ART_BYTES is refused")
+    except ValueError:
+        pass
+
     # The IDs ride along in additional_info, which ListenBrainz and Maloja read.
     sent = []
 
