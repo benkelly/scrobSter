@@ -26,7 +26,7 @@ import aiohttp
 from shazamio import Shazam
 from shazamio.interfaces.client import HTTPClientInterface
 
-from . import accounts, config, db, enrich, events, rooms, scrobble
+from . import accounts, colours, config, db, enrich, events, rooms, scrobble
 
 log = logging.getLogger("scrobster")
 
@@ -1094,6 +1094,9 @@ class Listener:
                     and now - before["ts"] < config.NOW_PLAYING_STOP_SECONDS):
                 room.song_since = now
             room.last_match = match
+            # Ready for MQTT and the displays by the time they ask, and
+            # worked out once per cover, not per request.
+            colours.prepare_soon(info.get("art_url"), room.id)
         for user in users:
             self._last_match_at[user["id"]] = now
         events.emit("match", room_id=room.id if room else None,

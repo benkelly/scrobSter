@@ -37,7 +37,7 @@ import time
 import aiohttp
 import aiomqtt
 
-from . import __version__, accounts, config, db, events, rooms, scrobble
+from . import __version__, accounts, colours, config, db, events, rooms, scrobble
 
 log = logging.getLogger("scrobster")
 
@@ -176,11 +176,13 @@ def _line(match):
 
 def now_playing(room) -> dict:
     """The record a room is playing, for a display: no offset or timestamp, so
-    it changes only when the record does. Null fields once the music stops."""
+    it changes only when the record does, or its cover's colours arrive. Null
+    fields once the music stops."""
     track = room["track"] if room["playing"] else None
     return {"room": room["name"], "playing": room["playing"],
             **{k: track.get(k) if track else None
-               for k in ("artist", "title", "album", "art_url")}}
+               for k in ("artist", "title", "album", "art_url")},
+            "colors": room["colors"]}
 
 
 def snapshot(listener, users=None) -> dict:
@@ -204,6 +206,7 @@ def snapshot(listener, users=None) -> dict:
             "failures": room.outage.tries,
             "now_playing": _line(match) if playing else "idle",
             "track": _track(match), "art_url": match.get("art_url") if match else None,
+            "colors": colours.cached(match.get("art_url")) if playing and match else None,
         })
     return {
         "hub": {"listening": listener.listening,
@@ -310,6 +313,17 @@ def hub_config(topics) -> dict:
     })
 
 
+# Home Assistant reads "None" as unknown, for a state sent while unavailable.
+COLOUR_STATE = "{{ value_json.colors.primary.hex if value_json.colors else None }}"
+# rgb_color as light.turn_on takes it, so an automation passes it on as it is.
+COLOUR_ATTRIBUTES = (
+    "{% set c = value_json.colors or {} %}"
+    "{% set p = c.get('primary') or {} %}{% set s = c.get('secondary') or {} %}"
+    "{{ {'rgb_color': p.get('rgb'), 'hex': p.get('hex'),"
+    " 'secondary_rgb_color': s.get('rgb'), 'secondary_hex': s.get('hex'),"
+    " 'brightness': c.get('brightness'), 'saturated': c.get('saturated')} | tojson }}")
+
+
 def room_config(topics, room) -> dict:
     device_id = topics.device_id("room", room["id"])
     model = {"stream": "Camera or stream", "browser": "Browser in the room"}.get(
@@ -333,6 +347,18 @@ def room_config(topics, room) -> dict:
                       {"topic": topics.room(room["id"]),
                        "value_template": "{{ 'online' if value_json.playing"
                                          " and value_json.art_url else 'offline' }}"}]},
+        # The cover's main colour, for a lamp to match. Unavailable while
+        # nothing plays or the cover's colours are not known, like the cover.
+        "cover_colour": {"platform": "sensor", "name": "Cover colour", "icon": "mdi:palette",
+                         "value_template": COLOUR_STATE,
+                         "json_attributes_topic": topics.room(room["id"]),
+                         "json_attributes_template": COLOUR_ATTRIBUTES,
+                         "availability_mode": "all",
+                         "availability": [
+                             {"topic": topics.status},
+                             {"topic": topics.room(room["id"]),
+                              "value_template": "{{ 'online' if value_json.playing"
+                                                " and value_json.colors else 'offline' }}"}]},
         "playing": {"platform": "binary_sensor", "name": "Music", "icon": "mdi:music-note",
                     "value_template": "{{ 'ON' if value_json.playing else 'OFF' }}"},
         "level": {"platform": "sensor", "name": "Input level", "icon": "mdi:microphone",

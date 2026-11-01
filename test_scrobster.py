@@ -258,6 +258,7 @@ def main():
     check_rates()
     check_events()
     check_mqtt()
+    check_colours()
     check_event_stream()
     check_restart()
     check_known_song()
@@ -1133,8 +1134,8 @@ def check_mqtt():
     or user goes, even while scrobSter was away, and commands act like the API."""
     import asyncio
     import types
-    from scrobster import accounts, config, db, events, listener as listener_mod
-    from scrobster import mqtt, rooms
+    from scrobster import accounts, colours, config, db, display, events
+    from scrobster import listener as listener_mod, mqtt, rooms
 
     topics = mqtt.Topics("scrobster", "homeassistant", "abc123")
     assert topics.owns("scrobster_abc123") and topics.owns("scrobster_abc123_room_4")
@@ -1194,11 +1195,32 @@ def check_mqtt():
             await asyncio.sleep(0.01)
         raise AssertionError(f"timed out: {what}")
 
+    # The cover and its colours, without the network or ffmpeg: check_colours
+    # tests the extraction itself.
+    red = {"primary": {"rgb": [200, 30, 30], "hex": "#c81e1e"},
+           "secondary": {"rgb": [20, 60, 200], "hex": "#143cc8"},
+           "brightness": 200, "saturated": True}
+    covers_asked = []
+
+    async def fake_fetch(url):
+        covers_asked.append(url)
+        return "image/jpeg", b"cover", '"1"'
+
+    worked_out = []
+
+    async def fake_colours(image):
+        assert image == b"cover"
+        worked_out.append(image)
+        return red
+
     with tempfile.TemporaryDirectory() as d:
         saved = (config.DB_PATH, mqtt.TICK_SECONDS, mqtt.RETAINED_WAIT_SECONDS,
-                 config.RECOGNITION_GAP_SECONDS)
+                 config.RECOGNITION_GAP_SECONDS, display._fetch, colours.of_image)
         config.DB_PATH = os.path.join(d, "mqtt.db")
         mqtt.TICK_SECONDS = mqtt.RETAINED_WAIT_SECONDS = 0.05
+        display._fetch, colours.of_image = fake_fetch, fake_colours
+        colours._found.clear()
+        colours._failed.clear()
         try:
             db.init()
             admin = accounts.create_user("admin", "password123", is_admin=True)
@@ -1246,7 +1268,7 @@ def check_mqtt():
                     assert client.last(topics.room_cover(mic["id"])) is None, "no cover yet"
                     assert json.loads(client.last(topics.room_now_playing(mic["id"]))) == {
                         "room": mic["name"], "playing": False, "artist": None,
-                        "title": None, "album": None, "art_url": None}
+                        "title": None, "album": None, "art_url": None, "colors": None}
                     assert client.last(topics.room_playing(mic["id"])) == "OFF"
                     # The cover is unavailable while the room is idle, and
                     # while scrobSter is away, like everything else.
@@ -1258,6 +1280,26 @@ def check_mqtt():
                     assert "playing" in cover["availability"][1]["value_template"]
                     assert cover["unique_id"] == f"{topics.device_id('room', mic['id'])}_cover", \
                         "kept, for the installs that have it"
+                    # Every entity keeps the unique_id it had, and the cover's
+                    # colour is a new one, unavailable like the cover.
+                    device = topics.device_id("room", mic["id"])
+                    assert {k: c["unique_id"] for k, c in room_config["components"].items()} \
+                        == {k: f"{device}_{k}" for k in (
+                            "now_playing", "cover", "cover_colour", "playing", "level",
+                            "running", "problem", "error", "enabled", "match")}
+                    assert hub["components"]["listening"]["unique_id"] == \
+                        f"{topics.device_id()}_listening"
+                    assert user_config["components"]["last_scrobble"]["unique_id"] == \
+                        f"{topics.device_id('user', admin['id'])}_last_scrobble"
+                    colour = room_config["components"]["cover_colour"]
+                    assert colour["platform"] == "sensor" and colour["name"] == "Cover colour"
+                    assert colour["icon"] == "mdi:palette"
+                    assert colour["state_topic"] == topics.room(mic["id"])
+                    assert colour["availability_mode"] == "all"
+                    assert [a["topic"] for a in colour["availability"]] == [
+                        topics.status, topics.room(mic["id"])]
+                    assert "colors" in colour["availability"][1]["value_template"]
+                    assert state["colors"] is None
 
                     # Commands act at once, and the new state follows.
                     client.inbox.put_nowait(Client._message(
@@ -1280,9 +1322,15 @@ def check_mqtt():
                     assert state["now_playing"] == "A - Song" and state["playing"]
                     assert client.last(topics.room_cover(mic["id"])) == "u"
                     assert client.last(topics.room_playing(mic["id"])) == "ON"
+                    # The cover's colours follow as soon as they are worked out.
+                    await until(lambda: json.loads(client.last(
+                        topics.room_now_playing(mic["id"])))["colors"], "colours")
                     playing = json.loads(client.last(topics.room_now_playing(mic["id"])))
                     assert playing == {"room": mic["name"], "playing": True, "artist": "A",
-                                       "title": "Song", "album": "Al", "art_url": "u"}
+                                       "title": "Song", "album": "Al", "art_url": "u",
+                                       "colors": red}
+                    assert json.loads(client.last(topics.room(mic["id"])))["colors"] == red
+                    assert covers_asked == ["u"], "once, at the size the host allows"
 
                     # The same song on the next cycle is not a new event.
                     fired_before = sum(t == topics.room_event(mic["id"])
@@ -1326,8 +1374,11 @@ def check_mqtt():
                     stopped = json.loads(client.last(topics.room_now_playing(mic["id"])))
                     assert not stopped["playing"] and stopped["art_url"] is None
                     assert stopped["artist"] is None and stopped["title"] is None
+                    assert stopped["colors"] is None
                     state = json.loads(client.last(topics.room(mic["id"])))
                     assert state["now_playing"] == "idle" and not state["playing"]
+                    assert state["colors"] is None, "the colour sensor goes unavailable"
+                    assert len(worked_out) == 1, "the same cover is not worked out again"
                     assert client.last(topics.room_cover(mic["id"])) == "u", \
                         "never emptied, Home Assistant would log an error"
 
@@ -1343,7 +1394,164 @@ def check_mqtt():
         finally:
             (config.DB_PATH, mqtt.TICK_SECONDS, mqtt.RETAINED_WAIT_SECONDS) = saved[:3]
             config.set_rates(gap=saved[3])
+            display._fetch, colours.of_image = saved[4:]
+            display._covers.clear()
+            colours._found.clear()
+            colours._failed.clear()
 
+
+
+def _cover(source):
+    """A JPEG from one of ffmpeg's test sources, as a cover would be."""
+    import subprocess
+    return subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", source,
+                           "-frames:v", "1", "-f", "image2pipe", "-c:v", "mjpeg", "-"],
+                          capture_output=True, check=True).stdout
+
+
+def check_colours():
+    """A cover's colours for a lamp: the main one a light can show, another
+    that looks different, and a warm white for a cover with no colour."""
+    import asyncio
+    import colorsys
+    import shutil
+    import time
+    from scrobster import colours
+
+    def raw(*areas):
+        """24x24 RGB pixels: (rgb, share) areas, in order."""
+        out = []
+        for rgb, share in areas:
+            out += [rgb] * round(share * 576)
+        out += [areas[-1][0]] * (576 - len(out))
+        return bytes(c for p in out for c in p)
+
+    def hue(c):
+        return colorsys.rgb_to_hsv(*(v / 255 for v in c["rgb"]))[0] * 360
+
+    # The picking alone, on raw pixels, so it runs without ffmpeg too.
+    found = colours.pick(raw(((200, 20, 20), 0.7), ((20, 20, 20), 0.3)))
+    assert found["primary"]["hex"] == "#c81414" and found["secondary"] is None, found
+    assert found["saturated"] and found["brightness"] == 200
+    assert found["primary"]["rgb"] == [200, 20, 20]
+    # The most common colour a light can show, not the most common colour.
+    found = colours.pick(raw(((5, 5, 5), 0.6), ((30, 90, 220), 0.25), ((240, 200, 30), 0.15)))
+    assert found["primary"]["hex"] == "#1e5adc" and found["secondary"]["hex"] == "#f0c81e", found
+    # One hue, light and dark: one colour for a lamp, so no secondary.
+    found = colours.pick(raw(((220, 30, 30), 0.6), ((110, 15, 15), 0.4)))
+    assert found["primary"]["hex"] == "#dc1e1e" and found["secondary"] is None, found
+    found = colours.pick(bytes([255, 0, 0]) * 346 + bytes([64, 0, 0]) * 230)
+    assert found["primary"]["hex"] == "#ff0000" and found["secondary"] is None, \
+        "a dark red is the same colour to a lamp, however dark"
+    # Red and pink differ in colour, not only in light.
+    assert colours.pick(raw(((220, 30, 30), 0.6), ((250, 140, 170), 0.4)))["secondary"]
+    # A speck of colour is not the cover's colour.
+    found = colours.pick(raw(((200, 20, 20), 0.02), ((128, 128, 128), 0.98)))
+    assert not found["saturated"] and found["secondary"] is None
+    # No colour at all: a warm white, as light as the cover.
+    for grey, low in (((0, 0, 0), True), ((128, 128, 128), None), ((255, 255, 255), False)):
+        found = colours.pick(raw((grey, 1)))
+        assert found["primary"]["rgb"] == list(colours.WARM_WHITE) and not found["saturated"]
+        assert found["secondary"] is None
+        assert 0 < found["brightness"] <= 255
+        if low is not None:
+            assert (found["brightness"] < 100) == low, (grey, found)
+    # The same pixels, the same answer, whatever their order.
+    mixed = raw(((30, 90, 220), 0.5), ((240, 200, 30), 0.3), ((10, 10, 10), 0.2))
+    turned = bytes(c for i in range(575, -1, -1) for c in mixed[i * 3:i * 3 + 3])
+    assert colours.pick(mixed) == colours.pick(turned) == colours.pick(mixed)
+
+    if not shutil.which("ffmpeg"):
+        print("check_colours: no ffmpeg here, so covers are not decoded")
+        return
+
+    async def of(source):
+        return await colours.of_image(_cover(source))
+
+    # A mostly red cover with a little writing on it.
+    started = time.monotonic()
+    found = asyncio.run(of("color=c=0xd02020:s=200x200,"
+                           "drawbox=x=20:y=150:w=120:h=20:c=white:t=fill"))
+    assert time.monotonic() - started < 3, "quick"
+    assert found["saturated"] and (hue(found["primary"]) < 15 or hue(found["primary"]) > 345)
+    r, g, b = found["primary"]["rgb"]
+    assert r > 170 and g < 70 and b < 70, found
+    assert found["secondary"] is None, "white is not a colour for a lamp"
+    # Two tones: blue on most of it, yellow on the rest.
+    found = asyncio.run(of("color=c=0x1040c0:s=200x200,"
+                           "drawbox=x=0:y=0:w=80:h=200:c=0xf0c020:t=fill"))
+    assert 210 < hue(found["primary"]) < 235 and 35 < hue(found["secondary"]) < 55, found
+    assert found["primary"]["hex"].startswith("#") and len(found["primary"]["hex"]) == 7
+    # ffmpeg's busy test card has many colours; two of them are picked.
+    found = asyncio.run(of("testsrc=s=200x200"))
+    assert found["saturated"] and found["secondary"], found
+    # Black, white and grey: a usable warm white, said to be no colour.
+    for colour in ("black", "white", "0x808080"):
+        found = asyncio.run(of(f"color=c={colour}:s=200x200"))
+        assert not found["saturated"] and found["primary"]["rgb"] == list(colours.WARM_WHITE)
+        assert found["secondary"] is None, colour
+    # Not a picture: None, and nothing raised.
+    assert asyncio.run(colours.of_image(b"\xff\xd8 not really a jpeg")) is None
+    assert asyncio.run(colours.of_image(b"")) is None
+
+    # Per cover: worked out once, then looked up; an unreadable cover is
+    # kept as None, a cover that cannot be fetched is asked for again later.
+    from scrobster import display, events
+    blue = _cover("color=c=0x1040c0:s=100x100")
+    asked = []
+
+    async def fake_fetch(url):
+        asked.append(url)
+        if "missing" in url:
+            raise ValueError("cover is text/html, not an image")
+        return "image/jpeg", b"junk" if "junk" in url else blue, '"1"'
+
+    apple = ("https://is1-ssl.mzstatic.com/image/thumb/Music1/v4/aa/0c72/x.rgb.jpg/"
+             "400x400cc.jpg")
+    saved = display._fetch
+    display._fetch = fake_fetch
+    for cache in (display._covers, display._failed, colours._found, colours._failed):
+        cache.clear()
+    try:
+        async def scenario():
+            with events.subscribe() as sub:
+                colours.prepare_soon(apple, 1)
+                colours.prepare_soon(apple, 2)  # another room, the same record
+                for _ in range(300):
+                    if colours.cached(apple):
+                        break
+                    await asyncio.sleep(0.01)
+                found = colours.cached(apple)
+                assert found and 210 < hue(found["primary"]) < 235, found
+                assert asked == [display.sized_url(apple, colours.FETCH_SIZE)], asked
+                assert asked[0].endswith("/100x100cc.jpg"), "a small one is enough"
+                await asyncio.sleep(0.05)
+                told = [(e["room_id"], e["art_url"]) for e in sub.drain()
+                        if e["kind"] == "colors"]
+                assert told == [(1, apple), (2, apple)], told
+                colours.prepare_soon(apple, 1)
+                assert await colours.colours_of(apple) is found and len(asked) == 1
+
+                junk = "https://example.com/junk.jpg"
+                assert await colours.colours_of(junk) is None
+                assert junk in colours._found and colours.cached(junk) is None
+                colours.prepare_soon(junk, 1)
+                assert not colours._rooms, "not tried again"
+
+                missing = "https://example.com/missing.jpg"
+                assert await colours.colours_of(missing) is None
+                assert missing not in colours._found and missing in colours._failed
+                tries = len(asked)
+                assert await colours.colours_of(missing) is None and len(asked) == tries, \
+                    "not asked again within RETRY_SECONDS"
+                await asyncio.sleep(0.05)
+                assert not [e for e in sub.drain() if e["kind"] == "colors"]
+                assert colours.cached(None) is None
+        asyncio.run(scenario())
+    finally:
+        display._fetch = saved
+        for cache in (display._covers, display._failed, colours._found, colours._failed):
+            cache.clear()
 
 
 def check_event_stream():
@@ -1372,6 +1580,8 @@ def check_event_stream():
     assert visible_event({"kind": "users", "ts": 1}, admin) is not None
     assert visible_event({"kind": "listening", "ts": 1, "on": False}, sam)["on"] is False
     assert visible_event({"kind": "rooms", "ts": 1}, sam) is not None
+    colors = {"kind": "colors", "ts": 1, "room_id": 3, "art_url": "u"}
+    assert visible_event(colors, sam) == {"kind": "colors", "ts": 1, "room_id": 3}
     assert visible_event({"kind": "something new", "ts": 1}, admin) is None, "unknown stays out"
     assert _sse("rooms", {"a": 1}) == 'event: rooms\ndata: {"a":1}\n\n'
 
@@ -1791,7 +2001,7 @@ def check_display():
     import struct
     import subprocess
     import time
-    from scrobster import accounts, app, config, db, display
+    from scrobster import accounts, app, colours, config, db, display
 
     class Running:
         """Stands in for a room's capture task."""
@@ -1835,6 +2045,10 @@ def check_display():
     for kind in ("scrobble", "services", "users", "member", "cleared", "rates"):
         assert app.display_event({"kind": kind, "ts": 1, "user_id": 1, "users": [1]}) is None, kind
     assert app.display_event({"kind": "rooms", "ts": 1}) == {"kind": "rooms", "ts": 1}
+    # and that its cover's colours are ready, for the room it may see
+    ready = {"kind": "colors", "ts": 1, "room_id": 2, "art_url": "u"}
+    assert app.display_event(ready) == {"kind": "colors", "ts": 1, "room_id": 2}
+    assert app.display_event(ready, 3) is None
 
     fetched = []
 
@@ -1929,6 +2143,7 @@ def check_display():
             assert now["since"] == started and now["art"] == f"/api/rooms/{room.id}/cover"
             assert now["art_key"] == display.art_key(apple)
             assert json.loads(_request(app.app, f"/api/now?{q}")[2])["room_id"] == room.id
+            assert now["colors"] is None, "until they are worked out"
 
             status, head, body = _request(app.app, cover + "&size=600")
             assert status == 200 and head["content-type"] == "image/jpeg", status
@@ -1952,10 +2167,19 @@ def check_display():
             assert len(fetched) == tries, "a failure waits RETRY_SECONDS"
             room.last_match["art_url"] = apple
 
+            # The cover's colours, once worked out, for a display token too.
+            red = {"primary": {"rgb": [200, 30, 30], "hex": "#c81e1e"}, "secondary": None,
+                   "brightness": 200, "saturated": True}
+            colours._found[apple] = red
+            assert json.loads(_request(app.app, f"/api/rooms/{room.id}/now?{q}")[2])[
+                "colors"] == red
+            assert json.loads(_request(app.app, f"/api/now?{q}")[2])["colors"] == red
+
             # It stops: silence, a quiet record side, the room stopping, or no
             # match for NOW_PLAYING_STOP_SECONDS.
             room.last_level_db = -99
-            assert not json.loads(_request(app.app, f"/api/rooms/{room.id}/now?{q}")[2])["playing"]
+            stopped = json.loads(_request(app.app, f"/api/rooms/{room.id}/now?{q}")[2])
+            assert not stopped["playing"] and stopped["colors"] is None
             assert _request(app.app, cover)[0] == 204
             room.last_level_db = -12
             room.quiet = True
@@ -1980,6 +2204,7 @@ def check_display():
             config.DB_PATH, display._fetch, app.listener.rooms = saved
             display._covers.clear()
             display._failed.clear()
+            colours._found.clear()
 
     # A display needs a name, so the list in Settings says which screen is which.
     try:

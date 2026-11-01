@@ -400,17 +400,20 @@ def visible_event(event: dict, user: dict) -> dict | None:
             return None
     elif kind == "listening":
         out["on"] = event["on"]
+    elif kind == "colors":
+        out["room_id"] = event["room_id"]
     elif kind not in ("rooms", "rates"):
         return None
     return out
 
 
 def display_event(event: dict, room_id=None) -> dict | None:
-    """What a display token may see of an event: that a room heard a song, or
-    that the rooms or listening changed. It then reads /api/rooms/{id}/now.
-    A token for one room, `room_id`, hears of that room's songs only."""
+    """What a display token may see of an event: that a room heard a song or
+    has its cover's colours, or that the rooms or listening changed. It then
+    reads /api/rooms/{id}/now. A token for one room, `room_id`, hears of that
+    room's songs only."""
     kind = event["kind"]
-    if kind == "match" and event["room_id"] is not None:
+    if kind in ("match", "colors") and event["room_id"] is not None:
         if room_id is not None and event["room_id"] != room_id:
             return None
         return {"kind": kind, "ts": event["ts"], "room_id": event["room_id"]}
@@ -591,7 +594,8 @@ def _live_room(room_id):
 
 def _nothing_playing() -> dict:
     return {"room_id": None, "room": None, "playing": False, "artist": None, "title": None,
-            "album": None, "since": None, "heard": None, "art": None, "art_key": None}
+            "album": None, "since": None, "heard": None, "art": None, "art_key": None,
+            "colors": None}
 
 
 @app.get("/api/rooms/{room_id}/now")

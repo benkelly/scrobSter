@@ -11,6 +11,7 @@ the whole state again instead.
 
 Kinds, with their fields:
   match        room_id (None for a browser clip), users (ids), match
+  colors       room_id, art_url: the colours of the cover it plays are ready
   scrobble     user_id, match_id, results ({service: status})
   cleared      users (ids): their playing-now mark was removed
   listening    on

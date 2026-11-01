@@ -43,6 +43,13 @@
     background: radial-gradient(ellipse at center, rgba(0,0,0,.35) 0%, rgba(0,0,0,.8) 100%);
   }
   body.playing #backdrop.on { opacity: .55; }
+  /* The cover's main colour, a glow under the shade, so the words keep
+     their contrast. Covers with no colour to speak of leave it off. */
+  #tint {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    opacity: 0; transition: opacity 2s ease;
+  }
+  body.playing #tint.on { opacity: 1; }
 
   .layer {
     position: fixed; top: 0; left: 0; right: 0; bottom: 0;
@@ -162,6 +169,7 @@
 </head>
 <body class="idle still">
 <div id="backdrop"></div>
+<div id="tint"></div>
 <div id="shade"></div>
 <div id="now" class="layer" aria-live="polite">
   <div id="art"><div class="none" aria-hidden="true">&#9834;</div><img id="cover" alt=""></div>
@@ -232,10 +240,33 @@
     next.src = src;
   }
 
+  // A soft glow of the cover's main colour, and a hint of it around the
+  // cover. Old browsers without rgba gradients keep the plain look.
+  var tinted = null;
+  function setTint(now) {
+    var c = now && now.colors && now.colors.saturated ? now.colors.primary : null;
+    var key = c ? c.hex : null;
+    if (key === tinted) return;
+    tinted = key;
+    var tint = $("tint"), art = $("art");
+    if (!c) {
+      tint.className = "";
+      art.style.boxShadow = "";
+      return;
+    }
+    var rgb = c.rgb[0] + "," + c.rgb[1] + "," + c.rgb[2];
+    tint.style.background = "radial-gradient(ellipse at center, rgba(" + rgb + ",.32) 0%, rgba("
+      + rgb + ",.12) 55%, rgba(" + rgb + ",0) 100%)";
+    tint.className = "on";
+    art.style.boxShadow = "0 3vmin 8vmin rgba(0,0,0,.6), 0 0 12vmin rgba(" + rgb + ",.28),"
+      + " 0 0 0 1px rgba(255,255,255,.06)";
+  }
+
   function paint(now) {
     var playing = !!(now && now.playing);
     document.body.className = (playing ? "playing" : "idle " + idleMode)
       + (document.body.className.indexOf("still") >= 0 ? " still" : "");
+    setTint(playing ? now : null);
     if (!playing) { document.title = "scrobSter display"; return; }
     var line = now.title + "\n" + now.artist + "\n" + (now.album || "") + "\n" + now.room;
     if (line !== shown) {
@@ -249,15 +280,23 @@
     setCover(now);
   }
 
+  // An event while a request is out may mean news it will not carry, such as
+  // the cover's colours, so one more load follows it.
+  var again = false;
   function load() {
-    if (loading) return;
+    if (loading) { again = true; return; }
     loading = true;
+    again = false;
     var xhr = new XMLHttpRequest();
     xhr.open("GET", withToken(nowUrl), true);
     xhr.withCredentials = true;
     xhr.timeout = 10000;
-    xhr.onload = function () {
+    var done = function () {
       loading = false;
+      if (again) setTimeout(load, 0);
+    };
+    xhr.onload = function () {
+      done();
       if (xhr.status === 200) {
         say("");
         try { paint(JSON.parse(xhr.responseText)); } catch (e) {}
@@ -270,7 +309,7 @@
         say("There is no room " + room + ".");
       }
     };
-    xhr.onerror = xhr.ontimeout = function () { loading = false; };
+    xhr.onerror = xhr.ontimeout = done;
     xhr.send();
   }
 
@@ -288,6 +327,7 @@
       if (!room || String(data.room_id) === room) load();
     };
     events.addEventListener("match", onRoom);
+    events.addEventListener("colors", onRoom);
     ["hello", "rooms", "listening", "resync"].forEach(function (kind) {
       events.addEventListener(kind, load);
     });
