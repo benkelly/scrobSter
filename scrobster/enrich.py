@@ -172,10 +172,14 @@ async def fetch_image(session, url) -> tuple[str, bytes]:
         kind = r.headers.get("Content-Type", "").split(";")[0].strip()
         if not kind.startswith("image/"):
             raise ValueError(f"cover is {kind or 'untyped'}, not an image")
-        image = await r.content.read(MAX_ART_BYTES + 1)
-        if len(image) > MAX_ART_BYTES:
-            raise ValueError("cover is too large")
-    return kind, image
+        # read(n) answers with what has arrived so far, which for a cover of
+        # more than one packet is only its top, so read until the end.
+        image = bytearray()
+        while chunk := await r.content.read(65536):
+            image += chunk
+            if len(image) > MAX_ART_BYTES:
+                raise ValueError("cover is too large")
+    return kind, bytes(image)
 
 
 async def _maloja_cover(url, key, artist, title, album, art_url) -> str:

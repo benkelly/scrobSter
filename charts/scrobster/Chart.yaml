@@ -7,8 +7,8 @@ type: application
 # matches the image. These two numbers matter for a chart installed from a
 # checkout, whose image tag defaults to appVersion: keep both equal to
 # __version__. CI fails when they differ.
-version: 0.7.1
-appVersion: "0.7.1"
+version: 0.7.2
+appVersion: "0.7.2"
 icon: https://raw.githubusercontent.com/benkelly/scrobSter/main/scrobster/static/icon.png
 home: https://github.com/benkelly/scrobSter
 sources:
