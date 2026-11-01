@@ -280,15 +280,23 @@
     setCover(now);
   }
 
+  // An event while a request is out may mean news it will not carry, such as
+  // the cover's colours, so one more load follows it.
+  var again = false;
   function load() {
-    if (loading) return;
+    if (loading) { again = true; return; }
     loading = true;
+    again = false;
     var xhr = new XMLHttpRequest();
     xhr.open("GET", withToken(nowUrl), true);
     xhr.withCredentials = true;
     xhr.timeout = 10000;
-    xhr.onload = function () {
+    var done = function () {
       loading = false;
+      if (again) setTimeout(load, 0);
+    };
+    xhr.onload = function () {
+      done();
       if (xhr.status === 200) {
         say("");
         try { paint(JSON.parse(xhr.responseText)); } catch (e) {}
@@ -301,7 +309,7 @@
         say("There is no room " + room + ".");
       }
     };
-    xhr.onerror = xhr.ontimeout = function () { loading = false; };
+    xhr.onerror = xhr.ontimeout = done;
     xhr.send();
   }
 

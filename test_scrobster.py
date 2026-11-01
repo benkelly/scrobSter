@@ -1440,6 +1440,9 @@ def check_colours():
     # One hue, light and dark: one colour for a lamp, so no secondary.
     found = colours.pick(raw(((220, 30, 30), 0.6), ((110, 15, 15), 0.4)))
     assert found["primary"]["hex"] == "#dc1e1e" and found["secondary"] is None, found
+    found = colours.pick(bytes([255, 0, 0]) * 346 + bytes([64, 0, 0]) * 230)
+    assert found["primary"]["hex"] == "#ff0000" and found["secondary"] is None, \
+        "a dark red is the same colour to a lamp, however dark"
     # Red and pink differ in colour, not only in light.
     assert colours.pick(raw(((220, 30, 30), 0.6), ((250, 140, 170), 0.4)))["secondary"]
     # A speck of colour is not the cover's colour.

@@ -43,7 +43,8 @@ MIN_SATURATION = 0.25  # less reads as grey or white
 MIN_SHARE = 0.04
 # The secondary colour differs from the primary by this much hue, in degrees,
 # or by this distance in a*b* (delta E without the lightness), such as red and
-# pink. Lightness alone does not count: a lamp sets its brightness apart.
+# pink, with both brought to full value first. Lightness alone does not count:
+# a lamp sets its brightness apart.
 MIN_HUE_DEGREES = 30
 MIN_CHROMA_APART = 45
 # For a cover with no colour to show: about 3000 K.
@@ -119,9 +120,17 @@ def _hue_apart(a, b) -> float:
     return min(d, 360 - d)
 
 
+def _full(rgb):
+    """The colour at full HSV value, as a lamp shows it at any brightness."""
+    top = max(rgb)
+    return tuple(c * 255 / top for c in rgb) if top else rgb
+
+
 def distinct(a, b) -> bool:
-    """Two colours a lamp would show differently."""
-    chroma = math.dist(_lab(a)[1:], _lab(b)[1:])
+    """Two colours a lamp would show differently. Both are compared at full
+    value, because a*b* shrinks as a colour darkens: a red and a dark red are
+    one colour to a lamp."""
+    chroma = math.dist(_lab(_full(a))[1:], _lab(_full(b))[1:])
     return _hue_apart(a, b) >= MIN_HUE_DEGREES or chroma >= MIN_CHROMA_APART
 
 

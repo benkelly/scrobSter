@@ -153,70 +153,88 @@ How the colours are picked is in [the API](api.md#the-covers-colours).
 
 The entity ids below are for a room named Kitchen. Home Assistant makes them
 from the device and entity names, so check yours under Settings, Devices &
-services, Entities, and search for `cover colour`. The first automation keeps
-the lamp as it was when the music starts, then follows each record. The
-second puts it back 30 seconds after the music stops:
+services, Entities, and search for `cover colour`.
+
+This automation keeps the lamp as it was before the music, follows each
+record, and puts the lamp back once the room's **Music** sensor turns off,
+`NOW_PLAYING_STOP_SECONDS` after the last match. The lamp is saved once per
+listening session, so the moment between two records when Cover colour is
+unavailable, while the next cover's colours are worked out, does not save the
+coloured lamp over it:
 
 ```yaml
 automation:
   - alias: Kitchen lamp follows the record
     mode: queued
     triggers:
+      # No to or from, so a new record with the same colour but another
+      # brightness or second colour also triggers it.
       - trigger: state
         entity_id: sensor.scrobster_kitchen_cover_colour
-        not_to: [unavailable, unknown]
-    actions:
-      # Only when the music starts, not for every record after it.
-      - if:
-          - condition: template
-            value_template: >-
-              {{ trigger.from_state is none
-                 or trigger.from_state.state in ['unavailable', 'unknown'] }}
-        then:
-          - action: scene.create
-            data:
-              scene_id: kitchen_lamp_before_music
-              snapshot_entities: [light.kitchen_lamp]
-      - action: light.turn_on
-        target: {entity_id: light.kitchen_lamp}
-        data:
-          rgb_color: "{{ state_attr('sensor.scrobster_kitchen_cover_colour', 'rgb_color') }}"
-          transition: 2
-          # Optional: as light as the cover. Leave it out to keep the lamp's
-          # brightness, or use brightness_pct for a fixed one.
-          brightness: "{{ state_attr('sensor.scrobster_kitchen_cover_colour', 'brightness') }}"
-
-  - alias: Kitchen lamp back after the record
-    triggers:
+        id: colour
       - trigger: state
-        entity_id: sensor.scrobster_kitchen_cover_colour
-        to: unavailable
-        for: {seconds: 30}
+        entity_id: binary_sensor.scrobster_kitchen_music
+        from: "on"
+        to: "off"
+        id: stopped
     actions:
-      # A scene made by scene.create is gone after Home Assistant restarts.
-      - if:
-          - condition: template
-            value_template: "{{ states.scene.kitchen_lamp_before_music is not none }}"
-        then:
-          - action: scene.turn_on
-            target: {entity_id: scene.kitchen_lamp_before_music}
-            data: {transition: 2}
-        else:
-          - action: light.turn_off
-            target: {entity_id: light.kitchen_lamp}
-            data: {transition: 2}
+      - choose:
+          - conditions:
+              - condition: trigger
+                id: colour
+              - condition: template
+                value_template: >-
+                  {{ trigger.to_state is not none
+                     and trigger.to_state.state not in ['unavailable', 'unknown'] }}
+              - condition: state
+                entity_id: binary_sensor.scrobster_kitchen_music
+                state: "on"
+            sequence:
+              # Once, when the music starts: the scene is there until the
+              # lamp is put back.
+              - if:
+                  - condition: template
+                    value_template: "{{ states.scene.kitchen_lamp_before_music is none }}"
+                then:
+                  - action: scene.create
+                    data:
+                      scene_id: kitchen_lamp_before_music
+                      snapshot_entities: [light.kitchen_lamp]
+              - action: light.turn_on
+                target: {entity_id: light.kitchen_lamp}
+                data:
+                  rgb_color: "{{ state_attr('sensor.scrobster_kitchen_cover_colour', 'rgb_color') }}"
+                  transition: 2
+                  # Optional: as light as the cover. Leave it out to keep the
+                  # lamp's brightness, or use brightness_pct for a fixed one.
+                  brightness: "{{ state_attr('sensor.scrobster_kitchen_cover_colour', 'brightness') }}"
+          - conditions:
+              - condition: trigger
+                id: stopped
+              - condition: template
+                value_template: "{{ states.scene.kitchen_lamp_before_music is not none }}"
+            sequence:
+              - action: scene.turn_on
+                target: {entity_id: scene.kitchen_lamp_before_music}
+                data: {transition: 2}
+              # Put back once, then forgotten, so the next record saves the
+              # lamp afresh.
+              - action: scene.delete
+                target: {entity_id: scene.kitchen_lamp_before_music}
 ```
 
-To leave the lamp alone for a black and white cover, add a condition before
-`light.turn_on`:
+To leave the lamp alone for a black and white cover, add this to the
+conditions of the first choice:
 
 ```yaml
-      - condition: template
-        value_template: "{{ state_attr('sensor.scrobster_kitchen_cover_colour', 'saturated') }}"
+              - condition: template
+                value_template: "{{ state_attr('sensor.scrobster_kitchen_cover_colour', 'saturated') }}"
 ```
 
-The sensor also goes unavailable for a moment when scrobSter restarts, so the
-lamp is put back then too, and follows the record again once it is back.
+When scrobSter restarts, Music goes unavailable rather than off, so the lamp
+keeps its colour and follows the record again once scrobSter is back. A scene
+made by `scene.create` does not survive a restart of Home Assistant, so after
+one the lamp is left as it is when the music stops.
 
 **WLED** works the same way: its Home Assistant integration makes each strip,
 and each segment, a light, so use its entity in `light.turn_on`. For two
