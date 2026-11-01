@@ -83,3 +83,55 @@ curl -N -H "Authorization: Bearer your-token" http://your-host:8000/api/events
 ```
 
 Without MQTT, a REST sensor can read `/api/status`. See [API](api.md).
+
+## Cover art for a display
+
+Each room's **Cover art** image shows the record it is playing, and goes
+unavailable when the music stops: `NOW_PLAYING_STOP_SECONDS` after the last
+match, the same moment Now playing reads `idle`. So a dashboard by the hi-fi
+never keeps showing the last record. This card shows the cover only while
+there is one:
+
+```yaml
+type: conditional
+conditions:
+  - condition: state
+    entity: image.scrobster_kitchen_cover_art
+    state_not: unavailable
+card:
+  type: picture-entity
+  entity: image.scrobster_kitchen_cover_art
+  show_name: false
+  show_state: false
+```
+
+The Now playing sensor carries the cover's address as its `art_url` attribute,
+for a template or a Markdown card. Home Assistant does not take an entity
+picture from MQTT attributes, so for a picture use the image entity.
+
+### Without Home Assistant
+
+A display that reads MQTT itself, such as an ESP32 with a screen, a Node-RED
+flow or a script on a Pi, can follow a room on two retained topics under
+`<MQTT_TOPIC>/<instance>/room/<room id>/`. They are sent again only when the
+record changes, not on every match:
+
+| Topic | Payload |
+|---|---|
+| `now_playing` | JSON: `room`, `playing`, `artist`, `title`, `album` and `art_url`. Once the music stops, `playing` is `false` and the rest is `null`, but for `room` |
+| `playing` | `ON` or `OFF` |
+| `cover` | the cover's URL, as plain text, for Home Assistant's image. It is never emptied, so it still holds the last cover after the music stops, or while a record without one plays. A display should take `art_url` from `now_playing` instead |
+
+The instance is a short id kept in the database. To see it, and every room:
+
+```sh
+mosquitto_sub -h your-broker -v -t 'scrobster/+/room/+/now_playing'
+```
+
+```
+scrobster/3f9a1c/room/1/now_playing {"album": "Discovery", "art_url": "https://is1-ssl.mzstatic.com/.../400x400cc.jpg", "artist": "Daft Punk", "playing": true, "room": "Kitchen", "title": "One More Time"}
+scrobster/3f9a1c/room/2/now_playing {"album": null, "art_url": null, "artist": null, "playing": false, "room": "Hall", "title": null}
+```
+
+The cover URL is the one Shazam gives, on its image server, so the display
+needs to reach the internet to load it.
