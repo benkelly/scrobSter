@@ -53,7 +53,10 @@ the defaults.
 
 - **A longer window does not help. It breaks matching.** Windows of 8 to 14
   seconds matched. Windows of 16 and 20 seconds failed every time, although
-  their fingerprints were larger. `CHUNK_SECONDS` is therefore capped at 14.
+  their fingerprints were larger. shazamio finds Shazam answers no match from
+  15 seconds up, and matches best at 12, the window the Shazam apps send. So
+  the fingerprint is always 12 seconds: the middle of a longer
+  `CHUNK_SECONDS`, or a shorter chunk whole.
 - **Shazam tolerates a lot of noise.** A known track still matched under heavy
   pink noise and strong artificial reverb, even when the noise was almost as
   loud as the music.

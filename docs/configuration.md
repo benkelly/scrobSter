@@ -54,7 +54,7 @@ A service is enabled when all of its variables are set.
 |---|---|---|
 | `AUDIO_BACKEND` | `avfoundation` (macOS) / `alsa` (Linux) | ffmpeg input format |
 | `AUDIO_DEVICE` | `:0` (macOS) / `default` (Linux) | ffmpeg input device for a microphone room that names no device of its own, the first room included |
-| `CHUNK_SECONDS` | `12` | recorded seconds per match attempt; values above 14 are capped |
+| `CHUNK_SECONDS` | `12` | recorded seconds per match attempt. Shazam is sent a 12-second fingerprint: the middle 12 seconds of a longer chunk, or a shorter chunk whole |
 | `MATCH_INTERVAL` | `15` | minimum seconds per cycle in each room, 12 to 600; increase if rate-limited. The Rooms tab can change it |
 | `RECOGNITION_GAP_SECONDS` | `4` | minimum seconds between two Shazam requests, across every room and browser clip, 1 to 60. The Rooms tab can change it |
 | `SKIP_KNOWN_SECONDS` | `60` | while a room hears a song it matched twice, skip Shazam for up to this long, or until the song should end. `0` asks every cycle |

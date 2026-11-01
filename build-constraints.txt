@@ -1,0 +1,4 @@
+# Build backends that the 32-bit ARM image fetches while compiling from source,
+# pinned like requirements.txt. The Dockerfile's wheels stage applies them with
+# PIP_CONSTRAINT, which also reaches pip's isolated build environments.
+maturin==1.16.0

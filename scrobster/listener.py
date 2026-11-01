@@ -28,9 +28,11 @@ from . import accounts, config, db, enrich, events, rooms, scrobble
 
 log = logging.getLogger("scrobster")
 
-# Measured against known audio (Shazam matched 8-14s windows, failed at 16s and 20s).
-# A longer capture is still useful, but never fingerprint more than this.
-MAX_SEGMENT_SECONDS = 14
+# The window shazamio fingerprints. 12s is what the Shazam apps send, and
+# shazamio 0.9 warns on any other length. Shazam answers no match from 15s up.
+# A longer capture still works: shazamio-core fingerprints its middle 12s, and a
+# shorter one whole.
+MAX_SEGMENT_SECONDS = 12
 # Below this peak there is nothing to identify, so skip the request and save quota.
 SILENT_DBFS = -70.0
 # A clip's floor is the median level of its windows this long. A click or a pop
@@ -60,6 +62,10 @@ class ShazamClient(HTTPClientInterface):
     That stalls capture and browser clips the whole time, makes the rate limit
     worse, and ends in "Failed to decode json". The capture loop backs off
     instead, see rate_limit_wait().
+
+    Each request opens and closes its own session, so nothing is pooled and
+    nothing is bound to an event loop. Shazam.close() leaves a client it was
+    given alone, and this one has nothing to close.
     """
 
     async def request(self, method, url, *args, **kwargs):
@@ -86,7 +92,7 @@ def rate_limit_wait(previous: float) -> float:
 
 
 def segment_seconds(chunk_seconds: int) -> int:
-    """Fingerprint window to ask for. Capped because oversized signatures never match."""
+    """Seconds of a browser clip worth keeping: no more than is fingerprinted."""
     return min(chunk_seconds, MAX_SEGMENT_SECONDS)
 
 
@@ -702,11 +708,13 @@ class Room:
 
 class Listener:
     def __init__(self):
-        self._shazam = Shazam(segment_duration_seconds=segment_seconds(config.CHUNK_SECONDS),
+        # Always the 12s window, even for a shorter CHUNK_SECONDS, which is then
+        # fingerprinted whole. Any other window makes shazamio warn.
+        self._shazam = Shazam(segment_duration_seconds=MAX_SEGMENT_SECONDS,
                               http_client=ShazamClient())
         if config.CHUNK_SECONDS > MAX_SEGMENT_SECONDS:
-            log.warning("CHUNK_SECONDS=%s, but only %ss is fingerprinted; longer windows"
-                        " stop matching", config.CHUNK_SECONDS, MAX_SEGMENT_SECONDS)
+            log.warning("CHUNK_SECONDS=%s, but only the middle %ss is fingerprinted",
+                        config.CHUNK_SECONDS, MAX_SEGMENT_SECONDS)
         self.rooms = {}  # room id -> Room
         self.running = False  # an administrator started listening
         self.started_at = None
@@ -1050,7 +1058,8 @@ async def _main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if len(sys.argv) > 1:
         data = pathlib.Path(sys.argv[1]).read_bytes()
-        print(parse_track(await Shazam().recognize(data)) or "no match")
+        async with Shazam(http_client=ShazamClient()) as shazam:
+            print(parse_track(await shazam.recognize(data)) or "no match")
         return
     db.init()
     accounts.ensure_first_user()
