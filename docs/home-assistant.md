@@ -38,7 +38,7 @@ if the broker needs them.
 | Device | Entities |
 |---|---|
 | **scrobSter** | Listening switch, Shazam rate limit, Shazam requests in the last ten minutes, and the two recognition rates as numbers |
-| **One per room**, in the Home Assistant area of the same name | Now playing (`Artist - Title`, or `idle`), with the track as attributes; Cover art; Music; Input level in dBFS; Recording; Problem, on while the room keeps failing, with `failing_since` and the reason; Last error; a Listen here switch; and a Match event |
+| **One per room**, in the Home Assistant area of the same name | Now playing (`Artist - Title`, or `idle`), with the track as attributes; Cover art; Cover colour; Music; Input level in dBFS; Recording; Problem, on while the room keeps failing, with `failing_since` and the reason; Last error; a Listen here switch; and a Match event |
 | **One per user** | Last scrobble, with the track as attributes; Scrobbles today; Services; and a Scrobble switch for every room |
 
 Everything is pushed when it changes, so Home Assistant polls nothing. Rooms and
@@ -118,7 +118,7 @@ record changes, not on every match:
 
 | Topic | Payload |
 |---|---|
-| `now_playing` | JSON: `room`, `playing`, `artist`, `title`, `album` and `art_url`. Once the music stops, `playing` is `false` and the rest is `null`, but for `room` |
+| `now_playing` | JSON: `room`, `playing`, `artist`, `title`, `album`, `art_url` and `colors`, the cover's colours as [the API](api.md#the-covers-colours) gives them. Once the music stops, `playing` is `false` and the rest is `null`, but for `room`. `colors` arrives a moment after the rest, as a second message |
 | `playing` | `ON` or `OFF` |
 | `cover` | the cover's URL, as plain text, for Home Assistant's image. It is never emptied, so it still holds the last cover after the music stops, or while a record without one plays. A display should take `art_url` from `now_playing` instead |
 
@@ -129,9 +129,133 @@ mosquitto_sub -h your-broker -v -t 'scrobster/+/room/+/now_playing'
 ```
 
 ```
-scrobster/3f9a1c/room/1/now_playing {"album": "Discovery", "art_url": "https://is1-ssl.mzstatic.com/.../400x400cc.jpg", "artist": "Daft Punk", "playing": true, "room": "Kitchen", "title": "One More Time"}
-scrobster/3f9a1c/room/2/now_playing {"album": null, "art_url": null, "artist": null, "playing": false, "room": "Hall", "title": null}
+scrobster/3f9a1c/room/1/now_playing {"album": "The Man-Machine", "art_url": "https://is1-ssl.mzstatic.com/.../400x400cc.jpg", "artist": "Kraftwerk", "colors": {"brightness": 227, "primary": {"hex": "#e3011b", "rgb": [227, 1, 27]}, "saturated": true, "secondary": null}, "playing": true, "room": "Kitchen", "title": "The Model"}
+scrobster/3f9a1c/room/2/now_playing {"album": null, "art_url": null, "artist": null, "colors": null, "playing": false, "room": "Hall", "title": null}
 ```
 
 The cover URL is the one Shazam gives, on its image server, so the display
 needs to reach the internet to load it.
+
+## Match a light to the cover
+
+Each room's **Cover colour** sensor holds the main colour of the record's
+cover, as `#rrggbb`, and goes unavailable when the music stops, like Cover
+art. Its attributes are what `light.turn_on` takes:
+
+| Attribute | Meaning |
+|---|---|
+| `rgb_color` | the main colour a light can show, such as `[227, 1, 27]` for Kraftwerk's red |
+| `secondary_rgb_color`, `secondary_hex` | another colour on the cover that looks different, or `null` |
+| `brightness` | 0 to 255, as light as that colour is on the cover |
+| `saturated` | `false` for a cover with no colour to speak of, such as a black and white photo. The colour is then a warm white |
+
+How the colours are picked is in [the API](api.md#the-covers-colours).
+
+The entity ids below are for a room named Kitchen. Home Assistant makes them
+from the device and entity names, so check yours under Settings, Devices &
+services, Entities, and search for `cover colour`. The first automation keeps
+the lamp as it was when the music starts, then follows each record. The
+second puts it back 30 seconds after the music stops:
+
+```yaml
+automation:
+  - alias: Kitchen lamp follows the record
+    mode: queued
+    triggers:
+      - trigger: state
+        entity_id: sensor.scrobster_kitchen_cover_colour
+        not_to: [unavailable, unknown]
+    actions:
+      # Only when the music starts, not for every record after it.
+      - if:
+          - condition: template
+            value_template: >-
+              {{ trigger.from_state is none
+                 or trigger.from_state.state in ['unavailable', 'unknown'] }}
+        then:
+          - action: scene.create
+            data:
+              scene_id: kitchen_lamp_before_music
+              snapshot_entities: [light.kitchen_lamp]
+      - action: light.turn_on
+        target: {entity_id: light.kitchen_lamp}
+        data:
+          rgb_color: "{{ state_attr('sensor.scrobster_kitchen_cover_colour', 'rgb_color') }}"
+          transition: 2
+          # Optional: as light as the cover. Leave it out to keep the lamp's
+          # brightness, or use brightness_pct for a fixed one.
+          brightness: "{{ state_attr('sensor.scrobster_kitchen_cover_colour', 'brightness') }}"
+
+  - alias: Kitchen lamp back after the record
+    triggers:
+      - trigger: state
+        entity_id: sensor.scrobster_kitchen_cover_colour
+        to: unavailable
+        for: {seconds: 30}
+    actions:
+      # A scene made by scene.create is gone after Home Assistant restarts.
+      - if:
+          - condition: template
+            value_template: "{{ states.scene.kitchen_lamp_before_music is not none }}"
+        then:
+          - action: scene.turn_on
+            target: {entity_id: scene.kitchen_lamp_before_music}
+            data: {transition: 2}
+        else:
+          - action: light.turn_off
+            target: {entity_id: light.kitchen_lamp}
+            data: {transition: 2}
+```
+
+To leave the lamp alone for a black and white cover, add a condition before
+`light.turn_on`:
+
+```yaml
+      - condition: template
+        value_template: "{{ state_attr('sensor.scrobster_kitchen_cover_colour', 'saturated') }}"
+```
+
+The sensor also goes unavailable for a moment when scrobSter restarts, so the
+lamp is put back then too, and follows the record again once it is back.
+
+**WLED** works the same way: its Home Assistant integration makes each strip,
+and each segment, a light, so use its entity in `light.turn_on`. For two
+colours, give two segments one each, with `secondary_rgb_color` for the
+second, or keep the primary when there is no second colour:
+
+```yaml
+      - action: light.turn_on
+        target: {entity_id: light.wled_shelf_segment_1}
+        data:
+          rgb_color: >-
+            {{ state_attr('sensor.scrobster_kitchen_cover_colour', 'secondary_rgb_color')
+               or state_attr('sensor.scrobster_kitchen_cover_colour', 'rgb_color') }}
+          transition: 2
+```
+
+A two-colour effect on one segment, such as WLED's Gradient, takes both
+colours through WLED's JSON API. A `rest_command` sends them:
+
+```yaml
+rest_command:
+  wled_shelf_colours:
+    url: http://wled-shelf.local/json/state
+    method: post
+    content_type: application/json
+    payload: >-
+      {"on": true, "transition": 20,
+       "seg": [{"col": [{{ primary | tojson }}, {{ secondary | tojson }}]}]}
+```
+
+and the automation calls it in place of `light.turn_on`:
+
+```yaml
+      - action: rest_command.wled_shelf_colours
+        data:
+          primary: "{{ state_attr('sensor.scrobster_kitchen_cover_colour', 'rgb_color') }}"
+          secondary: >-
+            {{ state_attr('sensor.scrobster_kitchen_cover_colour', 'secondary_rgb_color')
+               or state_attr('sensor.scrobster_kitchen_cover_colour', 'rgb_color') }}
+```
+
+WLED counts `transition` in tenths of a second, so 20 is two seconds.

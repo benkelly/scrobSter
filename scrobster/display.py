@@ -13,7 +13,7 @@ import time
 
 import aiohttp
 
-from . import config, enrich
+from . import colours, config, enrich
 from .listener import SILENT_DBFS
 
 log = logging.getLogger("scrobster")
@@ -71,7 +71,7 @@ def now_playing(room, now) -> dict:
             "since": room.song_since if match else None,
             "heard": match["ts"] if match else None,
             "art": f"/api/rooms/{room.id}/cover" if art else None,
-            "art_key": art_key(art)}
+            "art_key": art_key(art), "colors": colours.cached(art)}
 
 
 def latest_room(rooms, now):

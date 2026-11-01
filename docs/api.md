@@ -11,7 +11,7 @@ an app.
 |---|---|
 | `POST /api/login` `{username, password}` | sign in, sets a session cookie |
 | `GET /api/status` | version, listening state, last match, profile links, and `rooms`: each room's state, level and last match, and `skipped`, the cycles that did not ask Shazam because the song was known, and `failing_since`, the unix time a room started failing, or `null`. `floor_db` is the last clip's median level, and `quiet` says it was below `QUIET_DBFS`. `level_db` and `last_error` describe the first room. `mqtt` says whether the broker is connected |
-| `GET /api/events` | what happens, as it happens, as [server-sent events](https://developer.mozilla.org/docs/Web/API/Server-sent_events). Each event is named by its kind: `match`, `scrobble`, `cleared`, `listening`, `rooms`, `member`, `users`, `services`, `rates`. You see what the rest of the API would show you. `resync` means events were lost, so read `/api/status` again |
+| `GET /api/events` | what happens, as it happens, as [server-sent events](https://developer.mozilla.org/docs/Web/API/Server-sent_events). Each event is named by its kind: `match`, `colors`, `scrobble`, `cleared`, `listening`, `rooms`, `member`, `users`, `services`, `rates`. You see what the rest of the API would show you. `resync` means events were lost, so read `/api/status` again |
 | `GET /api/levels` | `{room_id: dBFS}`: the live peak of each room that is listening, or `null` between two recordings |
 | `POST /api/listen` `{"on": true}` | start or stop listening in every room that is turned on. Administrator only |
 | `POST /api/match` (raw audio body) | identify one clip and scrobble it for the caller. Answers `{match, level_db, floor_db, skipped}`: `match` is the track or `null`, `level_db` the clip's peak and `floor_db` its median level. `skipped` is `"silent"` when the peak is below -70 dBFS, `"quiet"` when the floor is below `QUIET_DBFS`, and `null` otherwise. A skipped clip does not ask Shazam. While Shazam limits requests, the answer is `429` with a `Retry-After` header in seconds |
@@ -67,11 +67,11 @@ set a header. Only a display token is read from the URL, never a personal one.
 | Endpoint | Purpose |
 |---|---|
 | `GET /display?room=1&idle=clock` | a full-screen page: the cover, title, artist and album. Without `room`, whichever room matched last. `idle` is `clock` or `blank`. Add `&token=` on a screen that is not signed in. `&listen=1` with a room token also makes it the room's microphone |
-| `GET /api/rooms/{id}/now` | `{room_id, room, playing, artist, title, album, since, heard, art, art_key}`. The song fields are `null` while nothing plays. `since` is when the room started hearing the song, `heard` its last match, `art` the room's cover route, and `art_key` changes with the cover |
+| `GET /api/rooms/{id}/now` | `{room_id, room, playing, artist, title, album, since, heard, art, art_key, colors}`. The song fields are `null` while nothing plays. `since` is when the room started hearing the song, `heard` its last match, `art` the room's cover route, and `art_key` changes with the cover. `colors` is the cover's colours for a light, see below |
 | `GET /api/now` | the same, for whichever room that plays matched last, or `room_id: null` |
 | `GET /api/rooms/{id}/cover?size=600&idle=204` | the cover itself, fetched once per song and kept in memory. It carries an `ETag`, so asking again with `If-None-Match` costs a `304`. `size` is 32 to 1200 pixels square: Apple's covers are fetched at that size, any other is served as it is |
 | `GET /api/cover` | the same, for the room `/api/now` picks |
-| `GET /api/events` | a display token sees only `match` events with their `room_id`, and `rooms` and `listening`. Read `now` again on each |
+| `GET /api/events` | a display token sees only `match` and `colors` events with their `room_id`, and `rooms` and `listening`. Read `now` again on each |
 | `GET /api/rooms/{id}/listen` | for a browser room's page: `{record, wait, reason, clip_seconds, interval}`. `record` is false while the room is off (`reason: off`), Shazam limits requests (`busy`), or the room hears a song it knows (`known`). `wait` is the seconds to wait first. Needs the room's own room token, or an administrator |
 | `POST /api/rooms/{id}/clip` | one clip from a browser room's page, as the raw body (WebM, Ogg, MP4 or WAV, up to 10 MB). The answer is `{skipped, match, level_db, floor_db, next}`: `skipped` is `silent`, `quiet`, `known` or `null`, and `next` is what `listen` would say now. `429` with `Retry-After` while Shazam limits requests, `409` for a room that is not a browser room or is not listening, `415` for audio that does not decode. Needs the room's own room token, or an administrator |
 
@@ -89,3 +89,29 @@ While nothing plays, or the song has no cover, `idle` chooses what the cover
 route answers: `204` (the default), `404`, or `image`, a black JPEG of `size`
 pixels, 400 without one. Shazam's covers are JPEGs too, so a client that
 decodes one format, such as ESPHome, shows both.
+
+### The cover's colours
+
+`colors` in `now` is `null` while nothing plays, or the song has no cover, or
+its colours are not worked out yet. They are worked out once per cover, when
+a room starts the song, and a `colors` event with the `room_id` says when they
+are ready, usually within a second. Otherwise:
+
+```json
+{"primary": {"rgb": [225, 1, 27], "hex": "#e1011b"},
+ "secondary": {"rgb": [16, 64, 192], "hex": "#1040c0"},
+ "brightness": 225, "saturated": true}
+```
+
+| Field | Meaning |
+|---|---|
+| `primary` | the most common colour on the cover that a light can show: not near black, near white or grey |
+| `secondary` | the next such colour that a light would show differently, or `null` |
+| `brightness` | 0 to 255: how light the primary colour is on the cover |
+| `saturated` | `false` for a cover with no such colour, such as a black and white photo. `primary` is then a warm white, and `brightness` follows how light the cover is |
+
+ffmpeg shrinks the cover to 24×24 pixels, which are grouped into up to eight
+colours. A colour counts when it covers at least 4 % of the cover, its HSV
+value is at least 0.22 and its saturation at least 0.25. The same cover always
+gives the same colours. A cover ffmpeg cannot read gives `null`, and never
+holds up the match.

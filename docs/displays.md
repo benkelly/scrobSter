@@ -104,6 +104,12 @@ Keep it running:
   clock further. On an OLED screen, `&idle=blank` is safer still.
 - **Old tablets work.** The page needs nothing newer than Safari 10.
 
+The page also takes on the cover's main colour: a soft glow behind the words,
+and around the cover. A black and white cover leaves the page as it is. The
+same colour is in the JSON as `colors`, see [Any other client](#any-other-client-or-script),
+and in Home Assistant as each room's Cover colour, which can set a lamp to
+match the record: see [Match a light to the cover](home-assistant.md#match-a-light-to-the-cover).
+
 ### Also the room's microphone
 
 A tablet can also be the room's microphone, so the room needs no microphone
@@ -411,12 +417,24 @@ curl -H "Authorization: Bearer display-..." \
 {"room_id": 1, "room": "Living room", "playing": true,
  "artist": "Fleetwood Mac", "title": "Dreams", "album": "Rumours",
  "since": 1761950000, "heard": 1761950090,
- "art": "/api/rooms/1/cover", "art_key": "3f2a9c1b7d04"}
+ "art": "/api/rooms/1/cover", "art_key": "3f2a9c1b7d04",
+ "colors": {"primary": {"rgb": [255, 197, 143], "hex": "#ffc58f"},
+            "secondary": null, "brightness": 199, "saturated": false}}
 ```
 
 While nothing plays, `playing` is `false` and the song fields are `null`.
 `art_key` changes with the cover, so a client fetches the image again only
 when it changes. `/api/now` answers the same for whichever room matched last.
+
+`colors` is the cover's main colour, for an LED strip or a backlight:
+`primary`, the most common colour on the cover that a light can show,
+`secondary`, another that looks different, or `null`, and `brightness`, 0 to
+255, as light as the primary is on the cover. A cover with no such colour,
+such as Rumours' black and white photo, gives a warm white with
+`saturated: false`, as above.
+`colors` is `null` while nothing plays, and for the first second or so of a
+song, while the colours are worked out; the `colors` event says when they are
+ready.
 
 **The cover**, as an image:
 
@@ -438,8 +456,9 @@ curl -N -H "Authorization: Bearer display-..." \
 ```
 
 A display token sees `hello` when it connects, `match` with the `room_id` each
-time a room matches, `rooms` and `listening` when those change, and `resync`
-when events were lost. Read `now` again on each one. A song that stops sends
+time a room matches, `colors` with the `room_id` when the colours of its cover
+are ready, `rooms` and `listening` when those change, and `resync` when events
+were lost. Read `now` again on each one. A song that stops sends
 no event, so also read `now` every 20 seconds or so, as the display page does.
 
 ## When something goes wrong
