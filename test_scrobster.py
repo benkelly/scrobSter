@@ -1958,6 +1958,30 @@ def check_librefm_scrobble():
     assert "error 6" in said and "libre.fm/2.0/" in said and "'track': 'T'" in said, said
     assert "secret" not in said and "'key'" not in said, said
 
+    # The real Libre.fm network signs in, so each request carries a session key.
+    # Without an API key and secret pylast skipped that, and every scrobble
+    # went out with no `sk`.
+    signed_in = []
+
+    def get_session_key(self, username, password_hash):
+        signed_in.append((self.network.api_key, username, password_hash))
+        return "the-session"
+    saved_sk = pylast.SessionKeyGenerator.get_session_key
+    pylast.SessionKeyGenerator.get_session_key = get_session_key
+    scrobble._networks.clear()
+    try:
+        network = scrobble._pylast_network(
+            "librefm", {"username": "ann", "password_hash": "0" * 32})
+        request = pylast._Request(network, "track.scrobble",
+                                  scrobble.scrobble_params("A", "T", None, 5))
+    finally:
+        pylast.SessionKeyGenerator.get_session_key = saved_sk
+        scrobble._networks.clear()
+    assert signed_in == [(scrobble.LIBREFM_API_KEY, "ann", "0" * 32)], signed_in
+    assert len(scrobble.LIBREFM_API_KEY) == len(scrobble.LIBREFM_API_SECRET) == 32
+    assert request.params["sk"] == "the-session" and request.params.get("api_sig"), \
+        request.params
+
 
 
 def check_outage():
