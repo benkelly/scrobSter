@@ -148,7 +148,9 @@ the room's **Problem** sensor is on meanwhile, for an automation that tells you.
 **Shazam's rate limit is shared.** Every room asks from the same address, so
 requests take turns: at most one per `RECOGNITION_GAP_SECONDS`, whatever the
 number of rooms. A silent room asks nothing. A 429 pauses every room, from one
-minute up to ten.
+minute up to ten. The pause keeps growing while the 429s keep coming, even if a
+request gets through in between, and starts at a minute again only after ten
+minutes without one.
 
 **A known song is not asked about again.** Once a room matches the same song
 twice in a row, it stops asking Shazam until that song should end, and for at

@@ -93,6 +93,13 @@ def rate_limit_wait(previous: float) -> float:
     return min(max(previous * 2, 60), 600)
 
 
+# A 429 this soon after the last pause ended counts as the same limit, so the
+# pause keeps growing. Shazam often lets a request or two through between
+# 429s. Starting again at a minute after each one asked every two minutes for
+# hours, which kept the limit going.
+RATE_LIMIT_MEMORY_SECONDS = 600
+
+
 def segment_seconds(chunk_seconds: int) -> int:
     """Seconds of a browser clip worth keeping: no more than is fingerprinted."""
     return min(chunk_seconds, MAX_SEGMENT_SECONDS)
@@ -738,6 +745,7 @@ class Listener:
         self._last_request = 0.0  # monotonic
         self._blocked_until = 0.0  # monotonic, set by a 429
         self._backoff = 0  # seconds, grows while Shazam answers 429
+        self._limit_ended = 0.0  # monotonic, when the last pause ran out
         self._requests = collections.deque()  # monotonic time of each request
         self.last_rate_limited = None  # unix time of the last 429
         # Set and cleared at once, to wake every room's wait after a rate change.
@@ -871,11 +879,13 @@ class Listener:
             try:
                 result = await self._shazam.recognize(wav)
             except RateLimited as e:
+                now = time.monotonic()
+                if now - self._limit_ended > RATE_LIMIT_MEMORY_SECONDS:
+                    self._backoff = 0
                 self.last_rate_limited = int(time.time())
                 self._backoff = rate_limit_wait(self._backoff)
-                self._blocked_until = time.monotonic() + self._backoff
+                self._blocked_until = self._limit_ended = now + self._backoff
                 raise RateLimited(f"{e}; trying again in {self._backoff:.0f}s") from None
-            self._backoff = 0
             return result
 
     async def _loop(self, room):
