@@ -26,20 +26,23 @@ This is the whole path of one clip:
 ```mermaid
 flowchart LR
   accTitle: The path of one clip from a phone
-  accDescr: Speakers play music. The phone's microphone records a 12-second clip in the browser. The clip travels over HTTPS, through Tailscale, a reverse proxy or Home Assistant ingress, to scrobSter as POST /api/match. scrobSter decodes it to a temporary WAV file, sends only a fingerprint to Shazam, and scrobbles the match to your own services.
+  accDescr: Speakers play music. The phone's microphone records a 12-second clip in the browser. The clip travels over HTTPS, through Tailscale, a Cloudflare Tunnel, a reverse proxy or Home Assistant ingress, to scrobSter as POST /api/match. scrobSter decodes it to a temporary WAV file, sends only a fingerprint to Shazam, and scrobbles the match to your own services.
   spk(["Speakers<br/>car, café, home"]) -.->|"sound"| phone
   subgraph dev["Your phone"]
     phone["Browser tab<br/>12-second clip<br/>raw audio"]
   end
   subgraph https["HTTPS, one of"]
     ts["tailscale serve"]
+    cf["Cloudflare Tunnel"]
     proxy["Reverse proxy<br/>for example Caddy"]
     ingress["Home Assistant<br/>ingress"]
   end
   phone --> ts
+  phone --> cf
   phone --> proxy
   phone --> ingress
   ts -->|"POST /api/match"| app
+  cf -->|"POST /api/match"| app
   proxy -->|"POST /api/match"| app
   ingress -->|"POST /api/match"| app
   subgraph server["Your server"]
@@ -60,7 +63,7 @@ localhost*.
 `http://localhost` works only in a browser on the server itself. A phone
 cannot use it.
 
-Pick one of these three ways.
+Pick one of these four ways.
 
 ### Tailscale
 
@@ -81,6 +84,56 @@ The page stays private to your tailnet, and Tailscale gets the certificate.
 4. Open that address on the phone.
 
 The phone needs Tailscale on whenever you listen, over Wi-Fi or mobile data.
+
+### Cloudflare Tunnel
+
+Use this if your domain is on Cloudflare. The server makes an outbound
+connection to Cloudflare, so you open no port on your router, and it works
+behind carrier-grade NAT. Cloudflare holds the certificate. This is how the
+author's own instance is reached.
+
+1. In the Cloudflare dashboard, open **Zero Trust**, then **Networks**,
+   **Tunnels**, and create a tunnel of type **Cloudflared**. Name it, for
+   example `scrobster`.
+2. Install the connector on the server with the command the dashboard shows.
+   On Debian or a Pi that is `sudo cloudflared service install <token>`. It
+   runs as a service and starts at boot.
+3. Add a **public hostname**: a subdomain such as `scrobster` on your domain,
+   with service type **HTTP** and URL `localhost:8000`.
+4. Open `https://scrobster.example.com` on the phone.
+
+With Docker, run the connector next to scrobSter in the same compose file,
+and point the public hostname at `http://scrobster:8000` instead:
+
+```yaml
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN}
+```
+
+Put `TUNNEL_TOKEN=<token>` in the `.env` next to the compose file.
+
+Things to know:
+
+- Cloudflare sends `X-Forwarded-Proto: https`, so scrobSter marks its sign-in
+  cookie secure.
+- The live event stream sends a keep-alive every 15 seconds, well inside
+  Cloudflare's 100-second idle limit.
+- The page is on the internet, like any public proxy. Give every account a
+  strong password.
+- **Cloudflare Access**, if you add it, puts Cloudflare's own sign-in in front
+  of scrobSter. A phone's browser handles that, but a display or a script with
+  a [display token](../configuration.md#displays) cannot. Leave Access off the paths
+  those use (`/display`, `/api/now`, `/api/rooms/`), or give them an Access
+  service token if they can send headers. Clips from the page are ordinary
+  requests and pass once you are signed in to Access.
+- Outside Home Assistant, set `TRUST_INGRESS=0`. Otherwise a request from the
+  Home Assistant ingress address is signed in as the owner, a shortcut a
+  public page does not need. See [Configuration](../configuration.md#configuration-environment-variables).
 
 ### A reverse proxy with a real certificate
 
@@ -247,7 +300,9 @@ at all.
 
 A phone works for a room without a server microphone. For a room you use
 every day, a [room](../rooms.md) on the server is better: it needs no open
-tab, no awake screen and no phone.
+tab, no awake screen and no phone. A tablet that stays by the hi-fi can also be
+a room of its own, which scrobbles for everyone who chose it, and shows what
+plays. See [A tablet as the room's microphone](../rooms.md#a-tablet-as-the-rooms-microphone).
 
 ## Privacy, data and battery
 

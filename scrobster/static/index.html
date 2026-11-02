@@ -80,7 +80,14 @@
           <select id="room_kind">
             <option value="device">A microphone on this server</option>
             <option value="stream">A camera or stream (RTSP, RTSPS, HTTP)</option>
+            <option value="browser">A browser in the room, such as a tablet by the hi-fi</option>
           </select></label>
+        <div id="room_browser_fields" class="hidden">
+          <p class="note">The browser records the clips and sends them here. After you
+            add the room, press its <b>Display</b> button and make a microphone link.
+            Open that link on the tablet: it shows what plays and listens. The page
+            needs https for the microphone.</p>
+        </div>
         <div id="room_device_fields">
           <div class="row">
             <label class="grow">Device
@@ -162,7 +169,9 @@
       <div class="card">
         <p class="muted small" style="margin-top:0">A tablet or a screen by the hi-fi
           that shows the cover of what a room plays. Its token reads what the rooms
-          play and nothing else, so its link is safe to leave on the screen.</p>
+          play and nothing else, so its link is safe to leave on the screen. For a
+          browser room, the same tablet can also be the room&rsquo;s microphone: its
+          link then reads that room only and sends what it hears there.</p>
         <div id="displays"></div>
         <form class="stack" id="displayform" autocomplete="off" style="margin-top:.75rem">
           <div class="row" style="align-items:flex-end">
@@ -170,6 +179,12 @@
                                            placeholder="Living room tablet" required></label>
             <label>Room<select id="display_room"></select></label>
           </div>
+          <label class="row hidden" id="display_listen_wrap" style="gap:.5rem;align-items:center">
+            <input type="checkbox" id="display_listen" style="width:auto">
+            <span>Use this browser as the room&rsquo;s microphone</span></label>
+          <p class="note hidden" id="display_listen_note">The link then reads this room only,
+            and sends what the tablet hears to this room. It cannot read other rooms
+            or change anything. Open it over https.</p>
           <div class="row"><button type="submit">Make a display link</button>
             <a id="display_preview" href="display" target="_blank" rel="noopener" class="small">Open here</a></div>
         </form>
@@ -347,7 +362,9 @@ function roomState(r) {
   if (r.last_error) return `<span class="err clamp" title="${esc(r.last_error)}">${esc(r.last_error)}</span>`;
   if (r.level_db != null && r.level_db < SILENT_DB) return `<span class="err">&#9888; silent, check this room&rsquo;s input</span>`;
   if (r.quiet || (r.level_db != null && r.level_db < -70)) return `<span class="muted">Quiet.</span>`;
-  if (!r.attempts) return `<span class="muted">Starting&hellip;</span>`;
+  if (!r.attempts) return r.kind === "browser"
+    ? `<span class="muted">Waiting for the room&rsquo;s page to send a clip&hellip;</span>`
+    : `<span class="muted">Starting&hellip;</span>`;
   return `<span class="muted">Listening for music&hellip;</span>`;
 }
 
@@ -371,7 +388,7 @@ function roomCard(r) {
   return `<div class="room" data-room="${r.id}">
     <div class="between">
       <div class="row"><span class="dot${roomDot(r)}" data-dot></span><b>${esc(r.name)}</b>
-        <span class="tag">${r.kind === "stream" ? "camera" : "microphone"}</span>
+        <span class="tag">${{stream: "camera", browser: "browser"}[r.kind] || "microphone"}</span>
         ${r.enabled ? "" : `<span class="badge muted">turned off</span>`}</div>
       <label class="member" title="${what}"><span>scrobble for me</span>
         <span class="switch"><input type="checkbox" data-member="${r.id}" ${r.member ? "checked" : ""}
@@ -380,7 +397,9 @@ function roomCard(r) {
     <div class="between small room-live" data-live></div>
     ${me?.is_admin ? `<div class="row small room-admin">
       ${r.input ? `<code class="grow">${esc(r.input)}</code>` : ""}
-      <button class="ghost small" data-display="${r.id}" title="Show what ${esc(r.name)} plays on a screen">Display</button>
+      <button class="ghost small" data-display="${r.id}" title="${r.kind === "browser"
+        ? `Make a link for the tablet that shows and listens in ${esc(r.name)}`
+        : `Show what ${esc(r.name)} plays on a screen`}">Display</button>
       <button class="ghost small" data-enable="${r.id}">${r.enabled ? "Turn off" : "Turn on"}</button>
       <button class="ghost small" data-edit="${r.id}">Edit</button>
       <button class="danger small" data-remove="${r.id}">Remove</button></div>` : ""}
@@ -922,6 +941,8 @@ function roomKind() { return $("#room_kind").value; }
 function paintKind() {
   $("#room_device_fields").classList.toggle("hidden", roomKind() !== "device");
   $("#room_stream_fields").classList.toggle("hidden", roomKind() !== "stream");
+  $("#room_browser_fields").classList.toggle("hidden", roomKind() !== "browser");
+  $("#audio_test").classList.toggle("hidden", roomKind() === "browser");
   $("#audio_note").textContent = "";
 }
 $("#room_kind").onchange = paintKind;
@@ -994,7 +1015,7 @@ $("#room_cancel").onclick = resetRoomForm;
 function roomBody() {
   const body = {name: $("#room_name").value.trim(), kind: roomKind()};
   if (body.kind === "stream") body.url = $("#room_url").value.trim();
-  else { body.device = audioChoice(); body.backend = $("#audio_backend").value.trim(); }
+  else if (body.kind !== "browser") { body.device = audioChoice(); body.backend = $("#audio_backend").value.trim(); }
   return body;
 }
 
@@ -1095,13 +1116,20 @@ $("#pwform").onsubmit = e => {
 // --- displays: a token that reads what the rooms play, shown once ---
 let madeToken = null;
 const absolute = path => new URL(path, location.href).href;
+let madeListen = false;
+const roomById = id => roomsKnown.find(r => String(r.id) === String(id));
 function displayLinks() {
   const room = $("#display_room").value;
+  const browser = roomById(room)?.kind === "browser";
+  $("#display_listen_wrap").classList.toggle("hidden", !browser);
+  if (!browser) $("#display_listen").checked = false;
+  $("#display_listen_note").classList.toggle("hidden", !$("#display_listen").checked);
   const q = room ? `room=${room}&` : "";
   $("#display_preview").href = room ? `display?room=${room}` : "display";
   if (!madeToken) return;
   const token = encodeURIComponent(madeToken);
-  $("#display_page_url").textContent = absolute(`display?${q}token=${token}`);
+  $("#display_page_url").textContent = absolute(
+    `display?${q}${madeListen ? "listen=1&" : ""}token=${token}`);
   $("#display_cover_url").textContent = absolute(
     `${room ? `api/rooms/${room}/cover` : "api/cover"}?size=480&idle=image&token=${token}`);
 }
@@ -1113,6 +1141,11 @@ function paintDisplayRooms(chosen) {
   sel.value = roomsKnown.some(r => String(r.id) === String(keep)) ? String(keep) : "";
   displayLinks();
 }
+function displayScope(d) {
+  if (d.room_id == null) return "reads every room";
+  const name = roomById(d.room_id)?.name || `room ${d.room_id}`;
+  return d.listen ? `${name}: reads and listens` : `reads ${name} only`;
+}
 async function loadDisplays() {
   $("#displays-section").classList.remove("hidden");
   if (!roomsKnown.length) { try { roomsKnown = await api("api/rooms"); } catch {} }
@@ -1120,7 +1153,8 @@ async function loadDisplays() {
   let list;
   try { list = await api("api/displays"); } catch (e) { toast(e.message, "err"); return; }
   $("#displays").innerHTML = list.length ? list.map(d => `<div class="between small" style="padding:.35rem 0">
-      <span><b>${esc(d.name)}</b> <span class="muted">&middot; made ${when(d.created_at)}
+      <span><b>${esc(d.name)}</b> <span class="tag">${esc(displayScope(d))}</span>
+        <span class="muted">&middot; made ${when(d.created_at)}
         &middot; ${d.last_seen ? `last seen ${when(d.last_seen)}` : "never used"}</span></span>
       <button class="danger small" data-revoke="${d.id}" data-name="${esc(d.name)}">Revoke</button></div>`).join("")
     : `<span class="muted small">No displays yet.</span>`;
@@ -1137,7 +1171,10 @@ async function loadDisplays() {
 function newDisplay(r) {
   location.hash = "settings";
   paintDisplayRooms(r.id);
-  $("#display_name").value = `${r.name} display`;
+  // A browser room has no other way to listen, so offer that first.
+  $("#display_listen").checked = r.kind === "browser";
+  displayLinks();
+  $("#display_name").value = r.kind === "browser" ? `${r.name} tablet` : `${r.name} display`;
   // After the hash change has shown the tab.
   setTimeout(() => {
     $("#displays-section").scrollIntoView({behavior: "smooth", block: "start"});
@@ -1145,12 +1182,16 @@ function newDisplay(r) {
   }, 50);
 }
 $("#display_room").onchange = () => displayLinks();
+$("#display_listen").onchange = () => displayLinks();
 $("#displayform").onsubmit = e => {
   e.preventDefault();
   busy(e.target.querySelector("button[type=submit]"), async () => {
     try {
-      const made = await send("api/displays", "POST", {name: $("#display_name").value});
+      const listen = $("#display_listen").checked;
+      const made = await send("api/displays", "POST", {name: $("#display_name").value,
+        room_id: listen ? +$("#display_room").value : null, listen});
       madeToken = made.token;
+      madeListen = made.listen;
       displayLinks();
       $("#displaymade").classList.remove("hidden");
       $("#display_name").value = "";

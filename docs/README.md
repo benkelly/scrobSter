@@ -22,6 +22,8 @@ the [Quick start](../README.md#quick-start).
 - **[Accounts and configuration](configuration.md)**: accounts, every
   environment variable, connecting Last.fm and cover art.
 - **[Home Assistant](home-assistant.md)**: the add-on and devices over MQTT.
+- **[A display by the hi-fi](displays.md)**: show what a room plays on a
+  tablet, a Raspberry Pi, a Home Assistant dashboard or an ESP32 with ESPHome.
 
 **Reference**
 

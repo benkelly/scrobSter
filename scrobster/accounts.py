@@ -189,6 +189,10 @@ def end_session(token):
 # its token reads what the rooms play and nothing else. It is shown once, when
 # it is made, and only its hash is kept. The prefix tells it from a personal
 # token at a glance.
+#
+# A room token is a display token tied to one browser room that may also send
+# that room's audio: a tablet by the hi-fi that is the room's screen and its
+# microphone. It reads that room only, and posts clips to that room only.
 
 DISPLAY_PREFIX = "display-"
 # last_seen is written at most this often, as a display asks every few seconds.
@@ -202,20 +206,34 @@ def _token_hash(token: str) -> str:
 
 def _display_public(r) -> dict:
     return {"id": r["id"], "name": r["name"], "created_at": r["created_at"],
-            "last_seen": r["last_seen"]}
+            "last_seen": r["last_seen"], "room_id": r["room_id"],
+            "listen": bool(r["listen"])}
 
 
-def create_display(name) -> dict:
-    """A new display token, returned in `token` this once."""
+def create_display(name, room_id=None, listen=False) -> dict:
+    """A new display token, returned in `token` this once.
+
+    With `room_id` it reads that room only. With `listen` as well, it also
+    sends that room's audio, which only a browser room takes. Removing the
+    room removes the token.
+    """
     name = str(name or "").strip()[:60]
     if not name:
         raise ValueError("give the display a name")
+    if listen:
+        room = rooms.get_room(room_id) if room_id is not None else None
+        if room is None or room.get("kind") != "browser":
+            raise ValueError("only a browser room can use a display as its microphone")
+    elif room_id is not None and rooms.get_room(room_id) is None:
+        raise ValueError("no such room")
     token = DISPLAY_PREFIX + secrets.token_urlsafe(24)
     with db._conn() as c:
-        cur = c.execute("INSERT INTO display_tokens(name, token_hash, created_at)"
-                        " VALUES(?,?,?)", (name, _token_hash(token), int(time.time())))
+        cur = c.execute("INSERT INTO display_tokens(name, token_hash, created_at, room_id,"
+                        " listen) VALUES(?,?,?,?,?)",
+                        (name, _token_hash(token), int(time.time()), room_id, int(bool(listen))))
         display_id = cur.lastrowid
-    return {"id": display_id, "name": name, "token": token}
+    return {"id": display_id, "name": name, "token": token, "room_id": room_id,
+            "listen": bool(listen)}
 
 
 def list_displays() -> list[dict]:

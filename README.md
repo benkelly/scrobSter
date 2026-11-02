@@ -37,6 +37,11 @@ On this page: [How it works](#how-it-works), [Requirements](#requirements),
   [connecting Last.fm](docs/configuration.md#connect-lastfm) and cover art.
 - **[Home Assistant](docs/home-assistant.md)**: the add-on and
   [devices over MQTT](docs/home-assistant.md#devices-over-mqtt).
+- **[A display by the hi-fi](docs/displays.md)**: show what a room plays on a
+  [tablet](docs/displays.md#an-old-tablet-or-phone), a
+  [Raspberry Pi](docs/displays.md#a-raspberry-pi-in-kiosk-mode), a
+  [Home Assistant dashboard](docs/displays.md#a-home-assistant-dashboard) or an
+  [ESP32 with ESPHome](docs/displays.md#esphome-on-an-esp32).
 
 **Reference**
 

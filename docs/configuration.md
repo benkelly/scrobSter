@@ -34,7 +34,15 @@ The token can read what the rooms play, and nothing else: no history, no
 accounts, no settings, no camera URLs. It still goes in a URL, so revoke it in
 the same list when a screen goes away. Only its hash is kept, so a lost one
 cannot be shown again: make a new one. [The API](api.md#displays) lists every
-option.
+option, and [A display by the hi-fi](displays.md) has a recipe for each kind
+of screen.
+
+For a browser room, the form also offers **Use this browser as the room's
+microphone**. The link then ends in `&listen=1`, and its token is a room
+token: it reads that room only, and sends what the tablet hears to that room.
+The list under Displays says what each token may do: "reads every room", or
+"Lounge: reads and listens". See
+[A tablet as the room's microphone](rooms.md#a-tablet-as-the-rooms-microphone).
 
 Each person connects their services under Settings. A secret is never shown
 again once saved:
@@ -69,6 +77,7 @@ A service is enabled when all of its variables are set.
 | `INGRESS_IP` | `172.30.32.2` | the address ingress requests come from |
 | `API_TOKEN` | unset | optional shared token that acts as the owner. Each user also has a personal token |
 | `LISTEN_ON_START` | `1` | start listening in every room that is turned on at boot |
+| `CREATE_SERVER_MIC_ROOM` | `1` | give a new database the microphone room **Server mic**. `0` starts it with no rooms, for a host with no sound card that only reads cameras. Read once, when the database is made: an existing database keeps its rooms. The Helm chart sets it from `createServerMicRoom` |
 | `LASTFM_API_KEY` `LASTFM_API_SECRET` | unset | identifies this application to Last.fm, for every user. Create a key at https://www.last.fm/api/account/create |
 | `MQTT_ENABLED` | `auto` | Home Assistant devices over MQTT. `auto` connects when `MQTT_HOST` is set or the Supervisor offers a broker. `0` turns it off. See [Home Assistant](home-assistant.md) |
 | `MQTT_HOST` `MQTT_PORT` | unset, `1883` | the broker |

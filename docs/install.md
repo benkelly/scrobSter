@@ -133,12 +133,19 @@ Values are checked against
 a misspelt key or a wrong type stops the install instead of being ignored.
 
 Cameras need nothing extra: add one on the **Rooms** tab with its RTSP or RTSPS
-address. To record from a node's own sound card, set `hostSound.enabled=true`
-and pin the pod to that node with `nodeSelector`. Reaching `/dev/snd` needs a
-privileged container.
+address. Without `hostSound`, a new install starts with no rooms, rather than
+a **Server mic** room that could only fail. To record from a node's own sound
+card, set `hostSound.enabled=true`, set `hostSound.audioGroup` to the group ID
+that owns `/dev/snd` on that node (`stat -c %g /dev/snd/controlC0`; 29 on
+Debian and Raspberry Pi OS), and pin the pod to that node with `nodeSelector`.
+Reaching `/dev/snd` needs a privileged container.
 
-The chart sets `TRUST_INGRESS=0`. A pod can hold Home Assistant's ingress
-address, and the app would otherwise sign that pod's requests in as the owner.
+The chart sets `TRUST_INGRESS=0`, and refuses to render if `env` or
+`secretEnv` sets it. A pod can hold Home Assistant's ingress address, and the
+app would otherwise sign that pod's requests in as the owner.
+
+A change to `secretEnv` restarts the pod. A Secret named by `existingSecret`
+does not: run `kubectl rollout restart deploy/scrobster` after editing it.
 
 CI installs the chart into a throwaway [kind](https://kind.sigs.k8s.io/)
 cluster on every pull request and signs in through the service.

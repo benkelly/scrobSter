@@ -13,6 +13,8 @@ fullnameOverride: ""
 #   MATCH_INTERVAL: "20"
 #   RECOGNITION_GAP_SECONDS: "5"
 #   LISTEN_ON_START: "0"
+# TRUST_INGRESS and CREATE_SERVER_MIC_ROOM are set by the chart, and the
+# chart refuses them here and in secretEnv.
 env: {}
 
 # Settings that hold a secret, kept in a Secret the chart creates. For
@@ -40,8 +42,18 @@ persistence:
 # with the sound card, so pin it with nodeSelector.
 hostSound:
   enabled: false
-  # The audio group in the image, which may open /dev/snd.
+  # The group ID that owns /dev/snd on the node, not a group in the image. The
+  # pod is given this ID as a supplemental group so its user may open the
+  # card. 29 is the audio group on Debian and Raspberry Pi OS. Find it on the
+  # node with: stat -c %g /dev/snd/controlC0
   audioGroup: 29
+
+# Whether a new database starts with the microphone room "Server mic". Empty
+# follows hostSound.enabled: a pod with no sound card would only see that room
+# fail. true or false overrides it. It sets CREATE_SERVER_MIC_ROOM, which is
+# read once, when the database is made, so it never removes the room from an
+# existing install.
+createServerMicRoom: null
 
 service:
   type: ClusterIP
@@ -68,6 +80,10 @@ resources: {}
 #  limits:
 #    memory: 512Mi
 
+# The pod restarts by itself when secretEnv changes. A Secret named by
+# existingSecret is not read by the chart, so after editing it run
+# `kubectl rollout restart`, or change an annotation here, for example
+# `secret-version: "2"`, to restart the pod from a values file.
 podAnnotations: {}
 podLabels: {}
 

@@ -10,11 +10,10 @@ import logging
 import re
 import struct
 import time
-import zlib
 
 import aiohttp
 
-from . import config, enrich
+from . import colours, config, enrich
 from .listener import SILENT_DBFS
 
 log = logging.getLogger("scrobster")
@@ -35,7 +34,7 @@ _APPLE = re.compile(r"^(https://[a-z0-9-]+\.mzstatic\.com/image/thumb/.+/)"
 _covers = collections.OrderedDict()  # url -> (content type, bytes, etag)
 _failed = {}  # url -> monotonic time of the last failure
 _fetching = {}  # url -> the task fetching it, shared by every display asking
-_idle = {}  # size -> PNG bytes
+_idle = {}  # size -> JPEG bytes
 
 
 def playing(room, now) -> bool:
@@ -72,7 +71,7 @@ def now_playing(room, now) -> dict:
             "since": room.song_since if match else None,
             "heard": match["ts"] if match else None,
             "art": f"/api/rooms/{room.id}/cover" if art else None,
-            "art_key": art_key(art)}
+            "art_key": art_key(art), "colors": colours.cached(art)}
 
 
 def latest_room(rooms, now):
@@ -132,19 +131,87 @@ async def room_cover(art_url, size=None):
     return found
 
 
-def _chunk(kind, data) -> bytes:
-    return (struct.pack(">I", len(data)) + kind + data
-            + struct.pack(">I", zlib.crc32(kind + data) & 0xffffffff))
+# The Huffman tables of the JPEG standard, Annex K, as (code counts by length,
+# symbols). Every decoder knows them, ESPHome's included.
+_DC_LUMA = ((0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0), range(12))
+_DC_CHROMA = ((0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0), range(12))
+# Only end-of-block is ever written, so only the start of each AC table matters,
+# but a decoder reads the whole table, so the whole table is sent.
+_AC_LUMA = ((0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 0x7d), bytes.fromhex(
+    "01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282"
+    "090a161718191a25262728292a3435363738393a434445464748494a535455565758595a"
+    "636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4"
+    "a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3"
+    "e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9fa"))
+_AC_CHROMA = ((0, 2, 1, 2, 4, 4, 3, 4, 7, 5, 4, 4, 0, 1, 2, 0x77), bytes.fromhex(
+    "000102031104052131061241510761711322328108144291a1b1c109233352f0156272d1"
+    "0a162434e125f11718191a262728292a35363738393a434445464748494a535455565758"
+    "595a636465666768696a737475767778797a82838485868788898a92939495969798999a"
+    "a2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9da"
+    "e2e3e4e5e6e7e8e9eaf2f3f4f5f6f7f8f9fa"))
+_QUANT = 8  # every coefficient divided by this; a black block has its DC alone
 
 
-def idle_png(size=400) -> bytes:
+def _codes(table) -> dict:
+    """symbol -> (code, length) of a JPEG Huffman table."""
+    counts, symbols = table
+    out, code, symbols = {}, 0, iter(symbols)
+    for length, count in enumerate(counts, 1):
+        for _ in range(count):
+            out[next(symbols)] = (code, length)
+            code += 1
+        code <<= 1
+    return out
+
+
+def _segment(marker, data) -> bytes:
+    return b"\xff" + bytes([marker]) + struct.pack(">H", len(data) + 2) + data
+
+
+def idle_jpeg(size=400) -> bytes:
     """A black square, for a display that wants a picture even when nothing
-    plays. Black, because a lit pixel that never changes burns into an OLED."""
-    if size not in _idle:
-        # One greyscale byte per pixel, after each row's filter byte.
-        rows = (b"\x00" + b"\x00" * size) * size
-        _idle[size] = (b"\x89PNG\r\n\x1a\n"
-                       + _chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 0, 0, 0, 0))
-                       + _chunk(b"IDAT", zlib.compress(rows, 9))
-                       + _chunk(b"IEND", b""))
-    return _idle[size]
+    plays. Black, because a lit pixel that never changes burns into an OLED.
+
+    A JPEG, like the covers, so a client that decodes one format, such as
+    ESPHome's online_image, can show both. Each 8x8 block of a black picture
+    is a constant: one DC value and no AC, so it is written here directly.
+    """
+    if size in _idle:
+        return _idle[size]
+    tables = (_DC_LUMA, _AC_LUMA, _DC_CHROMA, _AC_CHROMA)
+    dc_y, ac_y, dc_c, ac_c = (_codes(t) for t in tables)
+    # Black is Y 0, so -128 after the level shift, and a DC of 8 x -128.
+    # Cb and Cr are 128, so 0. DC is coded as the difference from the
+    # block before, so only the first block carries a value.
+    first = -1024 // _QUANT
+    bits = first.bit_length()
+    stream = [dc_y[bits], (first + (1 << bits) - 1, bits), ac_y[0],
+              dc_c[0], ac_c[0], dc_c[0], ac_c[0]]
+    rest = [dc_y[0], ac_y[0], dc_c[0], ac_c[0], dc_c[0], ac_c[0]]
+    blocks = (-(-size // 8)) ** 2
+    acc = nbits = 0
+    out = bytearray()
+    for code, length in stream + rest * (blocks - 1) + [(0x7f, 7)]:  # pad with ones
+        acc = (acc << length) | code
+        nbits += length
+        while nbits >= 8:
+            nbits -= 8
+            byte = (acc >> nbits) & 0xff
+            out.append(byte)
+            if byte == 0xff:
+                out.append(0)  # stuffed, so it is not read as a marker
+        acc &= (1 << nbits) - 1
+    dht = b"".join(_segment(0xc4, bytes([kind]) + bytes(counts) + bytes(symbols))
+                   for kind, (counts, symbols) in zip((0x00, 0x10, 0x01, 0x11), tables))
+    image = (b"\xff\xd8"
+             + _segment(0xe0, b"JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00")
+             + _segment(0xdb, b"\x00" + bytes([_QUANT]) * 64)
+             + _segment(0xc0, struct.pack(">BHHB", 8, size, size, 3)
+                        + b"\x01\x11\x00\x02\x11\x00\x03\x11\x00")
+             + dht
+             + _segment(0xda, b"\x03\x01\x00\x02\x11\x03\x11\x00\x3f\x00")
+             + bytes(out) + b"\xff\xd9")
+    if len(_idle) >= CACHE_SIZE:
+        _idle.clear()
+    _idle[size] = image
+    return image
