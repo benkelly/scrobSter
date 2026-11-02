@@ -118,12 +118,12 @@ await page.evaluate(() => {
 await page.mouse.move(0, 0);
 await shot(page, "rooms-edit", ["#roomform-section"]);
 
-// Settings: the services, then the API token.
+// Settings: the services, your microphone, then the API token.
 await view(page, "settings");
 await page.waitForFunction(() => document.querySelectorAll("#services .service").length === 4);
 await shot(page, "settings-services", ["#view-settings > h2:first-child", "#services"]);
-await shot(page, "settings-token", ["#view-settings > h2:nth-of-type(2)",
-                                    "#view-settings > .card:nth-of-type(2)"]);
+await shot(page, "settings-mic", ["#mic-heading", "#micform"]);
+await shot(page, "settings-token", ["#token-heading", "#token-card"]);
 
 // Users.
 await view(page, "users");

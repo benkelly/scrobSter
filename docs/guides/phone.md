@@ -323,6 +323,14 @@ same.
 every 15 seconds or so. Plan for a charger on a long drive. Stop the
 microphone when you are done.
 
+**How often it listens.** Under **Settings**, **Your microphone**, set
+**Listen every** to send a clip less often, 12 to 600 seconds. It applies to
+every phone and browser you sign in with. Empty listens as often as the rooms.
+A clip every 30 seconds halves the data, and the Shazam requests the rooms
+share with you. A song still gets matched, just a little later.
+
+<img src="../images/settings-mic.png" width="560" alt="Settings, Your microphone: Listen every, empty, which follows the rooms' 15 seconds, and a Save button">
+
 ## Rate limits
 
 Shazam's limit is shared. Clips from phones and every room on the server ask

@@ -163,7 +163,10 @@ def require_room_mic(room_id: int, request: Request) -> dict:
 
 def _public(user) -> dict:
     return {"id": user["id"], "username": user["username"],
-            "is_admin": bool(user["is_admin"]), "rooms": rooms.rooms_of(user["id"])}
+            "is_admin": bool(user["is_admin"]), "rooms": rooms.rooms_of(user["id"]),
+            # Their own browser microphone: its own interval or None, and the one used.
+            "mic_interval": user.get("mic_interval"), "mic_every": accounts.mic_every(user),
+            "mic_default": config.MATCH_INTERVAL}
 
 
 # --- sign in ----------------------------------------------------------------
@@ -204,6 +207,11 @@ async def update_me(body: dict, user: dict = Depends(require_user)):
     if body.get("room_mic") is not None:
         for room in rooms.list_rooms():
             rooms.set_member(room["id"], user["id"], bool(body["room_mic"]))
+    if "mic_interval" in body:
+        try:
+            user = accounts.set_mic_interval(user["id"], body["mic_interval"])
+        except ValueError as e:
+            raise HTTPException(400, str(e))
     return _public(user)
 
 
@@ -496,6 +504,14 @@ async def _upload(request: Request) -> bytes:
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(413, "audio too large")
     return data
+
+
+@app.get("/api/match/listen")
+async def match_listen(user: dict = Depends(require_user)):
+    """For the Listening tab's microphone: `{record, wait, reason, clip_seconds,
+    interval}`. `interval` is the seconds between clips this user chose, and
+    `record` is false while Shazam limits requests."""
+    return JSONResponse(listener.mic_advice(user), headers=_NO_STORE)
 
 
 @app.post("/api/match")

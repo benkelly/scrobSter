@@ -14,6 +14,9 @@ Schema 5 lets a display token belong to one room, and lets it send that room's
 audio, for a tablet that is both the room's screen and its microphone.
 
 Schema 6 lets a room listen at its own interval. NULL follows MATCH_INTERVAL.
+
+Schema 7 lets each user choose how often their own phone or browser
+microphone sends a clip. NULL follows MATCH_INTERVAL.
 """
 import json
 import os
@@ -22,7 +25,7 @@ import sqlite3
 
 from . import config
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 def _conn():
@@ -49,7 +52,10 @@ def _create_schema(c):
             -- and this column is no longer read.
             room_mic INTEGER NOT NULL DEFAULT 0,
             api_token TEXT UNIQUE,
-            created_at INTEGER NOT NULL);
+            created_at INTEGER NOT NULL,
+            -- Seconds between clips from this user's own browser microphone.
+            -- NULL follows MATCH_INTERVAL.
+            mic_interval INTEGER);
 
         CREATE TABLE IF NOT EXISTS credentials(
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -211,6 +217,13 @@ def _room_intervals(c):
         c.execute("ALTER TABLE rooms ADD COLUMN interval INTEGER")
 
 
+def _mic_intervals(c):
+    """Schema 7: each user may slow down their own browser microphone."""
+    columns = {r["name"] for r in c.execute("PRAGMA table_info(users)")}
+    if "mic_interval" not in columns:
+        c.execute("ALTER TABLE users ADD COLUMN mic_interval INTEGER")
+
+
 def init():
     # sqlite reports only "unable to open database file" for a missing directory
     # and for one it may not write. Say which, because the usual cause is a
@@ -246,6 +259,8 @@ def init():
             _scope_displays(c)
         if version < 6:
             _room_intervals(c)
+        if version < 7:
+            _mic_intervals(c)
         c.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.close()
 

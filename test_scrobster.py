@@ -271,6 +271,7 @@ def main():
     check_browser_clip()
     check_display_scope_migration()
     check_room_interval()
+    check_mic_interval()
     check_browser_room()
     check_install()
     print("ok")
@@ -2645,6 +2646,70 @@ def check_room_interval():
                 asyncio.run(room.stop())
             (config.DB_PATH, config.MATCH_INTERVAL, app.listener.rooms,
              app.listener.running) = saved
+
+
+def check_mic_interval():
+    """Each user chooses how often their own browser microphone sends a clip.
+    Empty follows MATCH_INTERVAL, and so does an account from before schema 7.
+    The page asks first, and is told to wait while Shazam limits requests."""
+    import sqlite3
+    import time
+    from scrobster import accounts, app, config, db
+
+    with tempfile.TemporaryDirectory() as d:
+        saved = (config.DB_PATH, config.MATCH_INTERVAL, app.listener._blocked_until)
+        config.DB_PATH = path = os.path.join(d, "v6.db")
+        old = sqlite3.connect(path)
+        old.execute("""CREATE TABLE users(id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE COLLATE NOCASE, password_hash TEXT NOT NULL,
+            is_admin INTEGER NOT NULL DEFAULT 0, room_mic INTEGER NOT NULL DEFAULT 0,
+            api_token TEXT UNIQUE, created_at INTEGER NOT NULL)""")
+        old.execute("INSERT INTO users(username, password_hash, api_token, created_at)"
+                    " VALUES('ann', 'x', 'scr_ann', 1)")
+        old.execute("PRAGMA user_version = 6")
+        old.commit()
+        old.close()
+        config.MATCH_INTERVAL = 15
+        app.listener._blocked_until = 0.0
+        try:
+            db.init()
+            db.init()  # twice is safe
+            ann = accounts.get_user_by_name("ann")
+            assert ann["mic_interval"] is None and accounts.mic_every(ann) == 15, ann
+
+            ann = accounts.set_mic_interval(ann["id"], "45")
+            assert ann["mic_interval"] == 45 and accounts.mic_every(ann) == 45
+            for bad in (3, 1000, "fast"):
+                try:
+                    accounts.set_mic_interval(ann["id"], bad)
+                    raise AssertionError(f"{bad!r} must be refused")
+                except ValueError:
+                    pass
+
+            auth = {"authorization": "Bearer scr_ann", "content-type": "application/json"}
+            status, head, body = _request(app.app, "/api/match/listen", auth)
+            got = json.loads(body)
+            assert status == 200 and got["record"] and got["interval"] == 45, got
+            assert head["cache-control"] == "no-store"
+            # While Shazam limits requests, the page is told to wait.
+            app.listener._blocked_until = time.monotonic() + 90
+            got = json.loads(_request(app.app, "/api/match/listen", auth)[2])
+            assert not got["record"] and got["reason"] == "busy" and 89 <= got["wait"] <= 90, got
+            app.listener._blocked_until = 0.0
+
+            # Through /api/me: cleared, refused, and what an empty field follows.
+            status, _, body = _request(app.app, "/api/me", auth, "PUT",
+                                       json.dumps({"mic_interval": None}).encode())
+            got = json.loads(body)
+            assert status == 200 and got["mic_interval"] is None and got["mic_every"] == 15, got
+            assert got["mic_default"] == 15
+            status, _, body = _request(app.app, "/api/me", auth, "PUT",
+                                       json.dumps({"mic_interval": 5}).encode())
+            assert status == 400, body
+            me = json.loads(_request(app.app, "/api/me", auth)[2])
+            assert me["mic_interval"] is None, "a refused value changes nothing"
+        finally:
+            config.DB_PATH, config.MATCH_INTERVAL, app.listener._blocked_until = saved
 
 
 def check_browser_room():
