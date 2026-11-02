@@ -391,7 +391,7 @@ def seed():
     first = rooms.list_rooms()[0]  # db.init() makes "Server mic"
     turntable = rooms.update_room(first["id"], name="Living room turntable",
                                   kind="device", device=TURNTABLE, backend="")
-    kitchen = rooms.add_room(name="Kitchen camera", kind="stream", url=CAMERA)
+    kitchen = rooms.add_room(name="Kitchen camera", kind="stream", url=CAMERA, interval=30)
     office = rooms.add_room(name="Office mic", kind="device", device=OFFICE, enabled=0)
     for room in (turntable, kitchen, office):
         rooms.set_member(room["id"], alex["id"], True)

@@ -270,6 +270,7 @@ def main():
     check_display()
     check_browser_clip()
     check_display_scope_migration()
+    check_room_interval()
     check_browser_room()
     check_install()
     print("ok")
@@ -2553,10 +2554,97 @@ def check_display_scope_migration():
             assert screen["name"] == "Hall" and screen["room_id"] is None, screen
             assert screen["listen"] is False
             version = sqlite3.connect(path).execute("PRAGMA user_version").fetchone()[0]
-            assert version == db.SCHEMA_VERSION == 5, version
+            assert version == db.SCHEMA_VERSION, version
             db.init()  # twice is safe
         finally:
             config.DB_PATH = saved
+
+
+def check_room_interval():
+    """A room may listen at its own interval. Empty follows MATCH_INTERVAL, and
+    a room saved before schema 6 does too."""
+    import asyncio
+    import sqlite3
+    import time
+    from scrobster import accounts, app, config, db, rooms
+    from scrobster import listener as listener_mod
+
+    with tempfile.TemporaryDirectory() as d:
+        saved = (config.DB_PATH, config.MATCH_INTERVAL, app.listener.rooms, app.listener.running)
+        # A schema 5 database: its rooms have no interval column.
+        config.DB_PATH = path = os.path.join(d, "v5.db")
+        old = sqlite3.connect(path)
+        old.execute("""CREATE TABLE rooms(id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE COLLATE NOCASE, kind TEXT NOT NULL DEFAULT 'device',
+            backend TEXT, device TEXT, url TEXT, enabled INTEGER NOT NULL DEFAULT 1,
+            created_at INTEGER NOT NULL)""")
+        old.execute("INSERT INTO rooms(name, kind, created_at) VALUES('Hall', 'device', 1)")
+        old.execute("PRAGMA user_version = 5")
+        old.commit()
+        old.close()
+        app.listener.rooms, app.listener.running = {}, False
+        config.MATCH_INTERVAL = 15
+        try:
+            db.init()
+            db.init()  # twice is safe
+            hall = rooms.list_rooms()[0]
+            assert hall["name"] == "Hall" and hall["interval"] is None, hall
+
+            # Stored, cleared, and refused out of range.
+            bedroom = rooms.add_room(name="Bedroom", kind="stream",
+                                     url="rtsps://cam:7441/token", interval="30")
+            assert bedroom["interval"] == 30, bedroom
+            assert rooms.update_room(bedroom["id"], name="Bedroom")["interval"] == 30, \
+                "an edit that leaves it out keeps it"
+            assert rooms.update_room(bedroom["id"], interval="")["interval"] is None
+            assert rooms.update_room(bedroom["id"], interval=45)["interval"] == 45
+            for bad in (5, 601, "soon", 12.5):
+                try:
+                    rooms.update_room(bedroom["id"], interval=bad)
+                    raise AssertionError(f"{bad!r} must be refused")
+                except ValueError:
+                    pass
+
+            # The listener uses the room's own, or MATCH_INTERVAL, read each time.
+            asyncio.run(app.listener.sync_rooms())
+            live = app.listener.rooms
+            assert live[bedroom["id"]].every == 45
+            assert live[hall["id"]].every == 15
+            config.MATCH_INTERVAL = 20
+            assert live[hall["id"]].every == 20 and live[bedroom["id"]].every == 45
+            assert app.listener.browser_timeout(live[bedroom["id"]]) == \
+                max(listener_mod.BROWSER_TIMEOUT_MIN_SECONDS, 90)
+            # An edit reaches the running room without a restart.
+            rooms.update_room(bedroom["id"], interval=None)
+            asyncio.run(app.listener.sync_rooms())
+            assert live[bedroom["id"]].every == 20
+
+            # The wait reads a function again each time, so it ends at once
+            # when the cycle is already older than the interval.
+            started = time.monotonic()
+            asyncio.run(app.listener._until_next_cycle(started - 100, lambda: 30))
+            assert time.monotonic() - started < 1
+
+            # Through the API: the page gets the room's own and the one it uses.
+            owner = accounts.create_user("owner", "password123", is_admin=True)
+            auth = {"authorization": f"Bearer {owner['api_token']}",
+                    "content-type": "application/json"}
+            status, _, body = _request(app.app, f"/api/rooms/{bedroom['id']}", auth, "PUT",
+                                       json.dumps({"interval": 60}).encode())
+            got = json.loads(body)
+            assert status == 200 and got["interval"] == 60 and got["every"] == 60, got
+            status, _, body = _request(app.app, f"/api/rooms/{bedroom['id']}", auth, "PUT",
+                                       json.dumps({"interval": 3}).encode())
+            assert status == 400 and b"every 12 to 600" in body, body
+            listed = {r["id"]: r for r in app._rooms_for(owner)}
+            assert listed[hall["id"]]["interval"] is None and listed[hall["id"]]["every"] == 20
+            assert sorted(app._rates_state()["room_intervals"], key=str) == [60, None], \
+                app._rates_state()["room_intervals"]
+        finally:
+            for room in list(app.listener.rooms.values()):
+                asyncio.run(room.stop())
+            (config.DB_PATH, config.MATCH_INTERVAL, app.listener.rooms,
+             app.listener.running) = saved
 
 
 def check_browser_room():

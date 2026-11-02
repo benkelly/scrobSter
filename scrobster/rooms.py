@@ -14,7 +14,7 @@ import re
 import time
 from urllib.parse import unquote, urlsplit
 
-from . import db, events
+from . import config, db, events
 
 KINDS = ("device", "stream", "browser")
 STREAM_SCHEMES = ("rtsp", "rtsps", "http", "https")
@@ -123,6 +123,22 @@ def get_room(room_id):
     return None if row is None else dict(row)
 
 
+def check_interval(value):
+    """A room's own seconds between listens, or None to follow MATCH_INTERVAL."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        if isinstance(value, float) and not value.is_integer():
+            raise ValueError
+        seconds = int(value)
+    except (TypeError, ValueError):
+        raise ValueError("the interval is a whole number of seconds") from None
+    low, high = config.MATCH_INTERVAL_RANGE
+    if not low <= seconds <= high:
+        raise ValueError(f"a room listens every {low} to {high} seconds")
+    return seconds
+
+
 def _clean(fields, existing=None):
     """Check a room's fields and fill in what an edit left out."""
     room = dict(existing or {"kind": "device", "enabled": 1})
@@ -137,8 +153,11 @@ def _clean(fields, existing=None):
     kind = room.get("kind")
     if kind not in KINDS:
         raise ValueError(f"a room is one of {', '.join(KINDS)}")
+    # None is a choice here, back to MATCH_INTERVAL, so it is not "left out".
+    interval = fields["interval"] if "interval" in fields else room.get("interval")
     out = {"name": name, "kind": kind, "enabled": int(bool(room.get("enabled"))),
-           "backend": None, "device": None, "url": None}
+           "backend": None, "device": None, "url": None,
+           "interval": check_interval(interval)}
     if kind == "stream":
         out["url"] = check_url(merge_url(str(room.get("url") or ""),
                                          (existing or {}).get("url")))
@@ -160,10 +179,10 @@ def add_room(**fields) -> dict:
         if c.execute("SELECT 1 FROM rooms WHERE name=?", (room["name"],)).fetchone():
             raise ValueError("another room has that name")
         room_id = c.execute(
-            "INSERT INTO rooms(name, kind, backend, device, url, enabled, created_at)"
-            " VALUES(?,?,?,?,?,?,?)",
+            "INSERT INTO rooms(name, kind, backend, device, url, enabled, interval,"
+            " created_at) VALUES(?,?,?,?,?,?,?,?)",
             (room["name"], room["kind"], room["backend"], room["device"], room["url"],
-             room["enabled"], int(time.time()))).lastrowid
+             room["enabled"], room["interval"], int(time.time()))).lastrowid
     return get_room(room_id)
 
 
@@ -176,9 +195,10 @@ def update_room(room_id, **fields) -> dict:
         if c.execute("SELECT 1 FROM rooms WHERE name=? AND id!=?",
                      (room["name"], room_id)).fetchone():
             raise ValueError("another room has that name")
-        c.execute("UPDATE rooms SET name=?, kind=?, backend=?, device=?, url=?, enabled=?"
-                  " WHERE id=?", (room["name"], room["kind"], room["backend"],
-                                  room["device"], room["url"], room["enabled"], room_id))
+        c.execute("UPDATE rooms SET name=?, kind=?, backend=?, device=?, url=?, enabled=?,"
+                  " interval=? WHERE id=?",
+                  (room["name"], room["kind"], room["backend"], room["device"],
+                   room["url"], room["enabled"], room["interval"], room_id))
     return get_room(room_id)
 
 

@@ -112,6 +112,15 @@
             password stays on the server and shows as <code>***</code>; leave it
             like that to keep it.</p>
         </div>
+        <label>Listen every
+          <span class="row" style="align-items:center;gap:.5rem">
+            <input id="room_interval" type="number" inputmode="numeric" step="1" min="12" max="600"
+                   style="max-width:7rem" aria-describedby="room_interval_note">
+            <span class="muted small">seconds</span></span></label>
+        <p class="note" id="room_interval_note" style="margin-top:-.25rem">Leave it empty to follow
+          <b>Seconds between listens in each room</b> under Recognition, now
+          <span id="room_interval_default">15</span>&nbsp;s. Slower here saves Shazam requests
+          for the other rooms.</p>
         <div class="row">
           <button type="submit" id="room_save">Add room</button>
           <button type="button" id="audio_test" class="ghost">Test level</button>
@@ -389,6 +398,7 @@ function roomCard(r) {
     <div class="between">
       <div class="row"><span class="dot${roomDot(r)}" data-dot></span><b>${esc(r.name)}</b>
         <span class="tag">${{stream: "camera", browser: "browser"}[r.kind] || "microphone"}</span>
+        ${r.interval ? `<span class="tag" title="Listens every ${r.interval} s, its own setting">every ${r.interval}&nbsp;s</span>` : ""}
         ${r.enabled ? "" : `<span class="badge muted">turned off</span>`}</div>
       <label class="member" title="${what}"><span>scrobble for me</span>
         <span class="switch"><input type="checkbox" data-member="${r.id}" ${r.member ? "checked" : ""}
@@ -415,7 +425,7 @@ const roomLevel = r => roomLevels.get(r.id) ?? r.level_db;
 function paintRooms(list) {
   roomsKnown = list;
   const el = $("#rooms");
-  const shape = JSON.stringify([me?.is_admin, list.map(r => [r.id, r.name, r.kind, r.enabled, r.member, r.input])]);
+  const shape = JSON.stringify([me?.is_admin, list.map(r => [r.id, r.name, r.kind, r.enabled, r.member, r.input, r.interval])]);
   if (shape !== roomsShape) {
     roomsShape = shape; roomsLive.clear();
     el.innerHTML = list.length ? list.map(roomCard).join("")
@@ -870,18 +880,28 @@ async function loadServices() {
 // --- how often to ask Shazam, for an administrator ---
 let rates = null;
 
-// Whether the rooms that are on can each listen at their interval: N rooms at
-// one request per I seconds need a request every I / N seconds.
+// Whether the rooms that are on can each listen at their interval. A room
+// that listens every I seconds asks 1 / I times a second, so together they
+// need a request every 1 / sum(1 / I) seconds. A room with its own interval
+// keeps it; the rest follow the field here.
 function paintRateFit() {
   if (!rates) return;
   const gap = parseFloat($("#rate_gap").value), interval = parseFloat($("#rate_interval").value);
   const n = rates.rooms_on, el = $("#rates_fit");
   if (!(gap > 0 && interval > 0) || !n) { el.textContent = ""; return; }
-  const need = interval / n, rooms = `${n} room${n === 1 ? "" : "s"}`;
+  const each = (rates.room_intervals || Array(n).fill(null)).map(i => i || interval);
+  const perSecond = each.reduce((sum, i) => sum + 1 / i, 0);
+  const need = 1 / perSecond, rooms = `${n} room${n === 1 ? "" : "s"}`;
+  const own = each.length - (rates.room_intervals || []).filter(i => !i).length;
+  const mixed = own ? `, ${own} at ${own === 1 ? "its" : "their"} own interval` : "";
   if (gap > need + 1e-9) {
     el.className = "note warn";
-    el.textContent = `${rooms} hearing music at once would want a request every ${+need.toFixed(1)} s, `
-      + `but the limit is ${gap} s. They take turns, so each room listens about every ${+(gap * n).toFixed(0)} s.`;
+    el.textContent = `${rooms}${mixed}, hearing music at once, would want a request every ${+need.toFixed(1)} s, `
+      + `but the limit is ${gap} s. They take turns, so each listens about ${+(gap * perSecond).toFixed(1)} times slower.`;
+  } else if (own) {
+    el.className = "note ok";
+    el.textContent = `Enough for ${rooms}${mixed}: together they want a request every `
+      + `${+need.toFixed(1)} s, and the limit is ${gap} s.`;
   } else {
     el.className = "note ok";
     el.textContent = `Enough for ${rooms}: up to ${Math.floor(interval / gap + 1e-9)} rooms can hear music at once`
@@ -896,6 +916,8 @@ function paintRates(r, fields = true) {
   Object.assign($("#rate_gap"), {min: gmin, max: gmax});
   Object.assign($("#rate_interval"), {min: imin, max: imax});
   if (fields) { $("#rate_gap").value = r.gap; $("#rate_interval").value = r.interval; }
+  $("#room_interval_default").textContent = r.interval;
+  $("#room_interval").placeholder = r.interval;
   const mins = r.window_seconds / 60;
   const parts = [`${r.requests} Shazam request${r.requests === 1 ? "" : "s"} in the last ${mins} minutes`
     + ` (${+(r.requests / mins).toFixed(1)} a minute).`];
@@ -995,6 +1017,7 @@ function editRoom(r) {
   $("#room_kind").value = r.kind;
   $("#room_url").value = r.url || "";
   $("#audio_backend").value = r.backend || "";
+  $("#room_interval").value = r.interval ?? "";
   paintDevices(r.device || ENV);
   paintKind();
   $("#roomform-section").scrollIntoView({behavior: "smooth", block: "start"});
@@ -1013,7 +1036,9 @@ function resetRoomForm() {
 $("#room_cancel").onclick = resetRoomForm;
 
 function roomBody() {
-  const body = {name: $("#room_name").value.trim(), kind: roomKind()};
+  const every = $("#room_interval").value.trim();
+  const body = {name: $("#room_name").value.trim(), kind: roomKind(),
+                interval: every === "" ? null : parseInt(every, 10)};
   if (body.kind === "stream") body.url = $("#room_url").value.trim();
   else if (body.kind !== "browser") { body.device = audioChoice(); body.backend = $("#audio_backend").value.trim(); }
   return body;

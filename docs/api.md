@@ -19,7 +19,7 @@ an app.
 | `GET /api/me` | account details, with the rooms that scrobble for you |
 | `GET /api/services`, `PUT/DELETE /api/services/{name}` | that user's service credentials |
 | `GET /api/rooms` | the rooms. An administrator also sees each input, with a camera password masked |
-| `POST /api/rooms`, `PUT/DELETE /api/rooms/{id}` `{name, kind, device, backend, url, enabled}` | add, change or remove a room. `kind` is `device` or `stream`. Administrator only |
+| `POST /api/rooms`, `PUT/DELETE /api/rooms/{id}` `{name, kind, device, backend, url, enabled, interval}` | add, change or remove a room. `kind` is `device`, `stream` or `browser`. `interval` is the room's own seconds between listens, 12 to 600, or `null` to follow `MATCH_INTERVAL`. Each room in the answer also has `every`, the seconds it uses. Administrator only |
 | `PUT /api/rooms/{id}/member` `{"on": true}` | receive what that room hears, or stop |
 | `GET/PUT/DELETE /api/recognition` `{gap, interval}` | how often Shazam is asked, with the request count of the last ten minutes. `DELETE` goes back to the environment. Administrator only |
 | `GET /api/audio` | the devices ffmpeg can see, and the environment's default. Administrator only |

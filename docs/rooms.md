@@ -15,7 +15,7 @@ name, which the history shows, and one input:
 **Test level** records three seconds and reports the peak, before you save. A
 camera with its audio turned off says so.
 
-![The room form editing the living room turntable: the device list shows the USB Audio CODEC picked by its card name, and Test level reports a peak of -14.2 dBFS](images/rooms-edit.png)
+![The room form editing the living room turntable: the device list shows the USB Audio CODEC picked by its card name, Listen every is empty to follow the 15 seconds under Recognition, and Test level reports a peak of -14.2 dBFS](images/rooms-edit.png)
 
 Each room runs its own capture loop, and the Rooms tab shows each room's level
 and what it hears, live. Every user turns on **scrobble for me** for the rooms
@@ -23,11 +23,11 @@ they want. A room scrobbles for nobody until then, except for the
 administrator who added it. A song that two rooms hear at once is still one play for
 someone who receives both.
 
-![The Rooms tab: a turntable playing Dreams by Fleetwood Mac and a kitchen camera, each with a live level meter and a scrobble for me switch, and an office microphone that is turned off](images/rooms.png)
+![The Rooms tab: a turntable playing Dreams by Fleetwood Mac and a kitchen camera that listens every 30 seconds, each with a live level meter and a scrobble for me switch, and an office microphone that is turned off](images/rooms.png)
 
 An administrator also sees how often Shazam is asked, below the rooms:
 
-![The Recognition card: 4 seconds between Shazam requests, 15 seconds between listens in each room, and the request count of the last ten minutes](images/rooms-recognition.png)
+![The Recognition card: 4 seconds between Shazam requests, 15 seconds between listens in each room, enough for two rooms with one at its own interval, and the request count of the last ten minutes](images/rooms-recognition.png)
 
 A camera reaches its room directly, or through a restream:
 
@@ -162,6 +162,12 @@ before the end, so the next song is caught as it starts. A song changed half-way
 is noticed within `SKIP_KNOWN_SECONDS`. Silence makes the room forget the song
 at once. While music plays this saves most requests, so more rooms fit within
 the rate limit. Set `SKIP_KNOWN_SECONDS=0` to ask every cycle.
+
+**A room can listen at its own pace.** Set **Listen every** in the room's form,
+12 to 600 seconds, to make one room ask less often than the rest, such as a
+camera in a bedroom that hears the same radio as the kitchen. Leave it empty to
+follow **Seconds between listens in each room**. The room shows its own interval
+as a tag, and a change applies at once.
 
 An administrator tunes both rates under **Recognition** on the Rooms tab, and a
 change applies at once. The card counts the requests of the last ten minutes,

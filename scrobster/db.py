@@ -12,6 +12,8 @@ else. Only a hash of each is kept.
 
 Schema 5 lets a display token belong to one room, and lets it send that room's
 audio, for a tablet that is both the room's screen and its microphone.
+
+Schema 6 lets a room listen at its own interval. NULL follows MATCH_INTERVAL.
 """
 import json
 import os
@@ -20,7 +22,7 @@ import sqlite3
 
 from . import config
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def _conn():
@@ -97,7 +99,9 @@ def _create_schema(c):
             kind TEXT NOT NULL DEFAULT 'device',
             backend TEXT, device TEXT, url TEXT,
             enabled INTEGER NOT NULL DEFAULT 1,
-            created_at INTEGER NOT NULL);
+            created_at INTEGER NOT NULL,
+            -- Seconds between listens here. NULL follows MATCH_INTERVAL.
+            interval INTEGER);
 
         -- A room cannot know who is listening, so receiving what it hears is a
         -- choice each user makes, room by room.
@@ -199,6 +203,14 @@ def _scope_displays(c):
         c.execute("ALTER TABLE display_tokens ADD COLUMN listen INTEGER NOT NULL DEFAULT 0")
 
 
+def _room_intervals(c):
+    """Schema 6: a room may listen at its own interval. The rooms made before
+    follow MATCH_INTERVAL, as they did."""
+    columns = {r["name"] for r in c.execute("PRAGMA table_info(rooms)")}
+    if "interval" not in columns:
+        c.execute("ALTER TABLE rooms ADD COLUMN interval INTEGER")
+
+
 def init():
     # sqlite reports only "unable to open database file" for a missing directory
     # and for one it may not write. Say which, because the usual cause is a
@@ -232,6 +244,8 @@ def init():
             _add_rooms(c, fresh)
         if version < 5:
             _scope_displays(c)
+        if version < 6:
+            _room_intervals(c)
         c.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.close()
 
