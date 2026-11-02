@@ -81,6 +81,6 @@ sequenceDiagram
 ```
 
 A 429 from Shazam pauses every room, for a minute at first and up to ten while
-it lasts. A match between two 429s does not reset the pause: only ten minutes
-without a 429 does. A clip from a browser takes its turn in the same slot, and scrobbles
+it lasts. A match between two 429s does not reset the pause. It starts at a minute again
+only when a 429 comes more than ten minutes after the last pause ended. A clip from a browser takes its turn in the same slot, and scrobbles
 only for the person who recorded it.
