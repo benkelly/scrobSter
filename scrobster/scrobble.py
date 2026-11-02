@@ -86,6 +86,11 @@ async def listenbrainz_username(url, token) -> str | None:
     return body.get("user_name")
 
 
+# Libre.fm accepts any key, so these only name the client.
+LIBREFM_API_KEY = pylast.md5("scrobSter")
+LIBREFM_API_SECRET = pylast.md5("scrobSter secret")
+
+
 def _pylast_network(service, data):
     """One client per account and way of signing in. A new password or session key
     replaces it, otherwise the old secret would keep being sent until a restart.
@@ -107,7 +112,13 @@ def _pylast_network(service, data):
                 password_hash=None if data.get("session_key") else _password_hash(data),
             )
         else:
+            # pylast only signs in, and so only sends a session key, when it has
+            # an API key and secret. Without them every scrobble went out with
+            # no `sk`, and Libre.fm answered "missing a required parameter".
+            # Libre.fm does not issue keys and takes any 32-character pair.
             network = pylast.LibreFMNetwork(
+                api_key=LIBREFM_API_KEY,
+                api_secret=LIBREFM_API_SECRET,
                 username=data.get("username"),
                 password_hash=_password_hash(data),
             )
@@ -143,8 +154,8 @@ def _pylast_scrobble(service, data, artist, title, album, ts):
         try:
             request.execute()
         except pylast.WSError as e:
-            # Libre.fm still answers "missing a required parameter" in the
-            # plain form. Log exactly what went, so the next log names it.
+            # Log exactly what went, secrets hidden, so a log names what
+            # Libre.fm wanted. This is how the missing `sk` was found.
             log.warning("librefm rejected track.scrobble (error %s) to %s with %s",
                         e.status, "".join(network.ws_server), _shown_params(request.params))
             raise
