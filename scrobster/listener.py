@@ -225,6 +225,12 @@ def known_for(prev_key, info, length, elapsed, cap) -> float:
     return cap
 
 
+def wav_seconds(wav: bytes) -> float:
+    """How long WAV bytes play, in seconds."""
+    with wave.open(io.BytesIO(wav)) as w:
+        return w.getnframes() / (w.getframerate() or 16000)
+
+
 def peak_dbfs(wav: bytes) -> float:
     """Peak level of 16-bit WAV bytes, in dBFS. Digital silence returns -99.0.
 
@@ -781,6 +787,9 @@ class Listener:
         self._now_playing = {}  # user_id -> (track_key, ts) of the last mark
         self._last_match_at = {}  # user_id -> when their audio was last identified
         self.browser_matches = {}  # user_id -> their own last browser clip
+        # user_id -> (track_key, known until, monotonic) for each user's own
+        # browser microphone, as a Room keeps known_key and known_until.
+        self._mic_known = {}
 
     def restore_plays(self):
         """Read back the plays scrobbled before a restart. Without them, a
@@ -1059,10 +1068,13 @@ class Listener:
 
     def mic_advice(self, user) -> dict:
         """Whether a user's own browser microphone, the Listening tab's, should
-        record now. The page keeps to `interval` between clips by itself, as a
-        browser room's page does, so this only says when Shazam is busy."""
-        wait = self.rate_limited_for()
-        return {"record": not wait, "wait": math.ceil(wait), "reason": "busy" if wait else None,
+        record now: not while Shazam is busy, nor while it hears a song it
+        knows. The page keeps to `interval` between clips by itself, as a
+        browser room's page does."""
+        wait, reason = self.rate_limited_for(), "busy"
+        if not wait:
+            wait, reason = self.mic_known_for(user["id"]), "known"
+        return {"record": not wait, "wait": math.ceil(wait), "reason": reason if wait else None,
                 "clip_seconds": segment_seconds(config.CHUNK_SECONDS),
                 "interval": accounts.mic_every(user)}
 
@@ -1070,24 +1082,44 @@ class Listener:
         """One clip a browser room's page sent. The same as a capture, from
         the moment the clip was recorded."""
         room.expect_by = time.monotonic() + self.browser_timeout(room)
-        with wave.open(io.BytesIO(wav)) as w:
-            seconds = w.getnframes() / (w.getframerate() or 16000)
         try:
-            return await self.hear(room, wav, time.monotonic() - seconds)
+            return await self.hear(room, wav, time.monotonic() - wav_seconds(wav))
         except RateLimited:
             raise
         except Exception as e:
             self.room_failed(room, e)
             raise
 
-    def _remember_song(self, room, info, cycle_start):
+    def _known_until(self, prev_key, info, cycle_start) -> float:
+        """Monotonic time until which a song matched twice need not be asked
+        about again, or 0.0. See known_for()."""
         isrc = info.get("isrc") if info else None
         if config.SKIP_KNOWN_SECONDS > 0 and isrc and enrich.track_length(isrc) is None:
             enrich.look_up_length(isrc, info["title"], info["album"])
-        known = known_for(room.known_key, info, enrich.track_length(isrc),
+        known = known_for(prev_key, info, enrich.track_length(isrc),
                           time.monotonic() - cycle_start, config.SKIP_KNOWN_SECONDS)
+        return time.monotonic() + known if known else 0.0
+
+    def _remember_song(self, room, info, cycle_start):
+        room.known_until = self._known_until(room.known_key, info, cycle_start)
         room.known_key = info["track_key"] if info else None
-        room.known_until = time.monotonic() + known if known else 0.0
+
+    # --- a user's own browser microphone: a known song is not asked again ---
+
+    def mic_known_for(self, user_id) -> float:
+        """Seconds this user's browser microphone may still skip, or 0."""
+        _, until = self._mic_known.get(user_id, (None, 0.0))
+        return max(0.0, until - time.monotonic())
+
+    def mic_forget(self, user_id):
+        """Silence or a quiet clip: the song ended."""
+        self._mic_known.pop(user_id, None)
+
+    def mic_heard(self, user_id, info, clip_seconds):
+        """Remember what a user's browser clip matched, as a room does."""
+        prev_key, _ = self._mic_known.get(user_id, (None, 0.0))
+        until = self._known_until(prev_key, info, time.monotonic() - clip_seconds)
+        self._mic_known[user_id] = (info["track_key"] if info else None, until)
 
     async def _until_next_cycle(self, cycle_start, interval=None):
         """Wait out MATCH_INTERVAL, or `interval`, from the start of the cycle.

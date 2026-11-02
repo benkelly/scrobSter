@@ -329,6 +329,11 @@ every phone and browser you sign in with. Empty listens as often as the rooms.
 A clip every 30 seconds halves the data, and the Shazam requests the rooms
 share with you. A song still gets matched, just a little later.
 
+**A song it knows is not asked about again.** Once two clips in a row match
+the same song, the phone stops sending until that song should end, as a room
+does. The note says *Still the same song*, with a countdown. Silence ends the
+song at once.
+
 <img src="../images/settings-mic.png" width="560" alt="Settings, Your microphone: Listen every, empty, which follows the rooms' 15 seconds, and a Save button">
 
 ## Rate limits
