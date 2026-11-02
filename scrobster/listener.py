@@ -1057,6 +1057,15 @@ class Listener:
         return {"record": not wait, "wait": math.ceil(wait), "reason": reason,
                 "clip_seconds": clip, "interval": room.every}
 
+    def mic_advice(self, user) -> dict:
+        """Whether a user's own browser microphone, the Listening tab's, should
+        record now. The page keeps to `interval` between clips by itself, as a
+        browser room's page does, so this only says when Shazam is busy."""
+        wait = self.rate_limited_for()
+        return {"record": not wait, "wait": math.ceil(wait), "reason": "busy" if wait else None,
+                "clip_seconds": segment_seconds(config.CHUNK_SECONDS),
+                "interval": accounts.mic_every(user)}
+
     async def hear_browser(self, room, wav) -> dict:
         """One clip a browser room's page sent. The same as a capture, from
         the moment the clip was recorded."""

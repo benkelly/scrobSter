@@ -131,6 +131,20 @@ def update_user(user_id, *, is_admin=None, password=None, keep_session=None):
     return get_user(user_id)
 
 
+def set_mic_interval(user_id, value):
+    """How often this user's own browser microphone sends a clip, in seconds,
+    or None to follow MATCH_INTERVAL. The same range as a room's."""
+    seconds = rooms.check_interval(value)
+    with db._conn() as c:
+        c.execute("UPDATE users SET mic_interval=? WHERE id=?", (seconds, user_id))
+    return get_user(user_id)
+
+
+def mic_every(user) -> int:
+    """Seconds between clips from this user's browser microphone."""
+    return user.get("mic_interval") or config.MATCH_INTERVAL
+
+
 def is_last_admin(user_id) -> bool:
     with db._conn() as c:
         return c.execute("SELECT COUNT(*) FROM users WHERE is_admin=1 AND id!=?",

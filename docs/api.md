@@ -16,7 +16,9 @@ an app.
 | `POST /api/listen` `{"on": true}` | start or stop listening in every room that is turned on. Administrator only |
 | `POST /api/match` (raw audio body) | identify one clip and scrobble it for the caller. Answers `{match, level_db, floor_db, skipped}`: `match` is the track or `null`, `level_db` the clip's peak and `floor_db` its median level. `skipped` is `"silent"` when the peak is below -70 dBFS, `"quiet"` when the floor is below `QUIET_DBFS`, and `null` otherwise. A skipped clip does not ask Shazam. While Shazam limits requests, the answer is `429` with a `Retry-After` header in seconds |
 | `GET /api/recent?limit=50` | that user's scrobble history |
-| `GET /api/me` | account details, with the rooms that scrobble for you |
+| `GET /api/me` | account details, with the rooms that scrobble for you, and your browser microphone's `mic_interval` (your own, or `null`), `mic_every` (the seconds it uses) and `mic_default` (what `null` follows) |
+| `PUT /api/me` `{"mic_interval": 30}` | how often your own browser microphone sends a clip, 12 to 600 seconds, or `null` to listen as often as the rooms |
+| `GET /api/match/listen` | for the Listening tab's microphone, asked before each clip: `{record, wait, reason, clip_seconds, interval}`. `interval` is your seconds between clips. `record` is false, with `reason: busy` and `wait` in seconds, while Shazam limits requests |
 | `GET /api/services`, `PUT/DELETE /api/services/{name}` | that user's service credentials |
 | `GET /api/rooms` | the rooms. An administrator also sees each input, with a camera password masked |
 | `POST /api/rooms`, `PUT/DELETE /api/rooms/{id}` `{name, kind, device, backend, url, enabled, interval}` | add, change or remove a room. `kind` is `device`, `stream` or `browser`. `interval` is the room's own seconds between listens, 12 to 600, or `null` to follow `MATCH_INTERVAL`. Each room in the answer also has `every`, the seconds it uses. Administrator only |

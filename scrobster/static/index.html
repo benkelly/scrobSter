@@ -158,8 +158,25 @@
     <h2>Services</h2>
     <div class="card" id="services"><span class="muted">Loading&hellip;</span></div>
 
-    <h2>Your API token</h2>
-    <div class="card">
+    <h2 id="mic-heading">Your microphone</h2>
+    <form class="card stack" id="micform" autocomplete="off">
+      <p class="muted small" style="margin:0">How often <b>Use this device&rsquo;s mic</b>
+        on the Listening tab sends a clip, on every phone or browser you sign in
+        with. Every clip shares the Shazam limit with the rooms, so slower leaves
+        more for them.</p>
+      <label>Listen every
+        <span class="row" style="align-items:center;gap:.5rem">
+          <input id="mic_interval" type="number" inputmode="numeric" step="1" min="12" max="600"
+                 style="max-width:7rem" aria-describedby="mic_interval_note">
+          <span class="muted small">seconds</span></span></label>
+      <p class="note" id="mic_interval_note" style="margin-top:-.25rem">Leave it empty to
+        listen as often as the rooms, now <span id="mic_interval_default">15</span>&nbsp;s.</p>
+      <div class="row"><button type="submit" id="mic_save">Save</button>
+        <span id="micformnote" class="small" aria-live="polite"></span></div>
+    </form>
+
+    <h2 id="token-heading">Your API token</h2>
+    <div class="card" id="token-card">
       <p class="muted small" style="margin-top:0">
         For the Home Assistant sensor and scripts. Send it as
         <code>Authorization: Bearer &lt;token&gt;</code>.
@@ -321,7 +338,7 @@ function showView(name) {
   if (!VIEWS.includes(name) || (name === "users" && !me?.is_admin)) name = "listen";
   $$('nav button').forEach(x => x.setAttribute("aria-selected", String(x.dataset.view === name)));
   VIEWS.forEach(v => $(`#view-${v}`).classList.toggle("hidden", v !== name));
-  if (name === "settings") { loadServices(); if (me?.is_admin) loadDisplays(); }
+  if (name === "settings") { loadServices(); paintMicSetting(); if (me?.is_admin) loadDisplays(); }
   if (name === "rooms") { refresh(); if (me?.is_admin) { loadAudio(); loadRates(); } }
   if (name === "users") loadUsers();
 }
@@ -721,7 +738,21 @@ function paintListening(recovered) {
     ? " This browser cannot keep the screen on: turn off auto-lock while you listen." : ""));
 }
 
+// Keep to this user's interval between clips, as a browser room's page keeps
+// to the room's. The server says only when Shazam is busy.
+let micLastClipAt = 0;
+async function micBeforeClip() {
+  const a = await api("api/match/listen");
+  if (!a.record) return {seconds: a.wait || 30, reason: a.reason || "busy"};
+  const left = (a.interval || 15) - (Date.now() - micLastClipAt) / 1000;
+  if (micLastClipAt && left > 1) return {seconds: Math.ceil(left), reason: "cadence"};
+  micLastClipAt = Date.now();
+  return null;
+}
+
 const mic = window.ScrobsterMic ? ScrobsterMic.create({
+  gapMs: 0,
+  beforeClip: micBeforeClip,
   onClip: clip => ScrobsterMic.upload("api/match", clip).then(micResult),
   onLevel: paintMicLevel,
   onDevices: paintMicDevices,
@@ -736,6 +767,8 @@ const mic = window.ScrobsterMic ? ScrobsterMic.create({
           + " It comes back when it is free, with this page in front.", "warn");
         break;
       case "waiting":
+        // Between two clips at the chosen interval: keep what the last clip said.
+        if (info.reason === "cadence") break;
         if (info.reason === "busy") micCountdown("Shazam is busy", info.until, "warn");
         else if (info.reason === "network") micCountdown("The server cannot be reached", info.until, "err");
         else micCountdown(`The server could not identify the clip (${micError(info.error)})`, info.until, "err");
@@ -778,7 +811,7 @@ $("#mic").onclick = () => {
     return;
   }
   micOn = !micOn; paintMic();
-  if (micOn) { micAwake = null; mic.start(); refresh(); }
+  if (micOn) { micAwake = null; micLastClipAt = 0; mic.start(); refresh(); }
   // The meter stops now rather than when the clip in flight finishes, so the
   // button and the bar agree.
   else { mic.stop(); micNote(""); refresh(); }
@@ -1093,6 +1126,29 @@ async function lastfmConnect() {
 
 // --- API token: hidden until asked for, so a screen share does not leak it ---
 let tokenShown = false;
+// --- your own microphone: how often it sends a clip ---
+function paintMicSetting() {
+  if (!me) return;
+  $("#mic_interval").value = me.mic_interval ?? "";
+  // The rooms' interval is what an empty field follows.
+  $("#mic_interval_default").textContent = me.mic_default;
+  $("#mic_interval").placeholder = me.mic_default;
+}
+$("#micform").onsubmit = e => {
+  e.preventDefault();
+  const note = $("#micformnote"), every = $("#mic_interval").value.trim();
+  busy($("#mic_save"), async () => {
+    try {
+      await send("api/me", "PUT", {mic_interval: every === "" ? null : parseInt(every, 10)});
+      me = await api("api/me");
+      paintMicSetting();
+      note.className = "small ok";
+      note.textContent = me.mic_interval ? `Saved: a clip every ${me.mic_interval} s.`
+                                         : `Saved: as often as the rooms, every ${me.mic_every} s.`;
+    } catch (err) { note.className = "small err"; note.textContent = err.message; }
+  });
+};
+
 function paintToken() {
   const code = $("#apitoken");
   if (!me.api_token) { code.textContent = "(none)"; code.className = ""; return; }
