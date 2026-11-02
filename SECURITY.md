@@ -40,7 +40,10 @@ problem:
   Settings, Displays. Removing the room revokes it too. A token that does more
   than that is a security problem.
 - **Camera URLs.** A stream URL can carry the camera's password. The web page
-  and the API show it as `***`, and errors are cleaned of it.
+  and the API show it as `***`, and errors are cleaned of it. Some cameras,
+  such as UniFi Protect, put the secret in the path instead, so the log and
+  errors hide the path too. Administrators still see the path on the Rooms
+  tab, to edit it.
 - **The MQTT broker.** Whoever can publish to it can start and stop listening,
   change the rates, and choose rooms for any user. Camera URLs and service
   credentials are never published to it.
