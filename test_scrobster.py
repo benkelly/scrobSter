@@ -515,6 +515,53 @@ def check_keep_listening():
     from scrobster import listener, scrobble
 
     assert [listener.rate_limit_wait(w) for w in (0, 60, 400, 600)] == [60, 120, 600, 600]
+    # Recognitions go to a random device path, as in shazamio 0.8.1. Other
+    # Shazam URLs are left alone.
+    tag = ("https://amp.shazam.com/discovery/v5/en-US/GB/iphone/-/tag/A/B"
+           "?sync=true&webv3=true")
+    seen = {listener.spread_device(tag).split("/")[7] for _ in range(200)}
+    assert seen == set(listener.SHAZAM_DEVICES), seen
+    assert listener.spread_device(tag).endswith("/-/tag/A/B?sync=true&webv3=true")
+    track = "https://amp.shazam.com/discovery/v5/en-US/GB/iphone/-/track/1"
+    assert listener.spread_device(track) == track
+
+    # ShazamClient applies it to what it really sends.
+    asked = []
+
+    class Answer:
+        status = 200
+
+        async def json(self, content_type=None):
+            return {"matches": []}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class Session:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def request(self, method, url, **kwargs):
+            asked.append(url)
+            return Answer()
+
+    saved_session = listener.aiohttp.ClientSession
+    listener.aiohttp.ClientSession = Session
+    try:
+        for _ in range(60):
+            asyncio.run(listener.ShazamClient().request("POST", tag))
+    finally:
+        listener.aiohttp.ClientSession = saved_session
+    assert {u.split("/")[7] for u in asked} == set(listener.SHAZAM_DEVICES), asked[:3]
     assert isinstance(listener.Listener()._shazam.http_client, listener.ShazamClient), \
         "shazamio's own client retries a 429 for twelve minutes"
 

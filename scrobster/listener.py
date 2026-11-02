@@ -16,6 +16,7 @@ import io
 import logging
 import math
 import pathlib
+import random
 import re
 import sys
 import tempfile
@@ -78,6 +79,7 @@ class ShazamClient(HTTPClientInterface):
         return await self._send("GET", url, lambda r: r.text(), **kwargs)
 
     async def _send(self, method, url, read, **kwargs):
+        url = spread_device(url)
         timeout = aiohttp.ClientTimeout(total=SHAZAM_TIMEOUT_SECONDS)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.request(method, url, **kwargs) as r:
@@ -86,6 +88,21 @@ class ShazamClient(HTTPClientInterface):
                 if r.status >= 400:
                     raise RuntimeError(f"Shazam answered HTTP {r.status}")
                 return await read(r)
+
+
+# shazamio 0.8.1 sent each recognition to a random device path, and 0.9.0
+# always sends /iphone/. Since 0.8.0 moved to 0.9.0, one camera room hit 429s
+# all day where it had none before. Spreading the requests again, as 0.8.1
+# did, gives the limit three paths to count instead of one. Every path answers
+# with the title, artist, album, cover and ISRC that scrobSter reads.
+SHAZAM_DEVICES = ("iphone", "android", "web")
+_TAG_PATH = re.compile(r"/(?:iphone|android|web)/-/tag/")
+
+
+def spread_device(url: str) -> str:
+    """A recognition URL with its device path picked at random. Any other
+    Shazam URL is left as it is."""
+    return _TAG_PATH.sub(lambda _: f"/{random.choice(SHAZAM_DEVICES)}/-/tag/", url, count=1)
 
 
 def rate_limit_wait(previous: float) -> float:
