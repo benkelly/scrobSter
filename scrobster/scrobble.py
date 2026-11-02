@@ -126,11 +126,28 @@ def scrobble_params(artist, title, album, ts) -> dict:
     return params
 
 
+# Never logged: they sign the request or stand in for the password.
+_SECRET_PARAMS = ("sk", "api_sig", "api_key", "authToken")
+
+
+def _shown_params(params) -> dict:
+    """A request's parameters with the secrets hidden, safe for the log."""
+    return {k: ("***" if k in _SECRET_PARAMS else v) for k, v in params.items()}
+
+
 def _pylast_scrobble(service, data, artist, title, album, ts):
     network = _pylast_network(service, data)
     if service == "librefm":
-        pylast._Request(network, "track.scrobble",
-                        scrobble_params(artist, title, album, ts)).execute()
+        request = pylast._Request(network, "track.scrobble",
+                                  scrobble_params(artist, title, album, ts))
+        try:
+            request.execute()
+        except pylast.WSError as e:
+            # Libre.fm still answers "missing a required parameter" in the
+            # plain form. Log exactly what went, so the next log names it.
+            log.warning("librefm rejected track.scrobble (error %s) to %s with %s",
+                        e.status, "".join(network.ws_server), _shown_params(request.params))
+            raise
         return
     network.scrobble(artist=artist, title=title, album=album, timestamp=ts)
 
