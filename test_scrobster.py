@@ -681,6 +681,31 @@ def check_shazamio():
     except listener.RateLimited:
         pass
     assert house.rate_limited_for() > 0 and house.last_rate_limited
+    assert house._backoff == 60, house._backoff
+
+    # A match between two 429s does not start the pause again at a minute.
+    # Shazam lets a request through now and then, and resetting asked every
+    # two minutes for hours.
+    async def says_ok(*a, **k):
+        return {"matches": []}
+    client.request = says_ok
+    house._blocked_until = house._last_request = 0.0
+    asyncio.run(house.recognize(_music(12)))
+    client.request = says_429
+    house._last_request = 0.0
+    try:
+        asyncio.run(house.recognize(_music(12)))
+    except listener.RateLimited as e:
+        assert "120s" in str(e), e
+    assert house._backoff == 120, "the pause grows across a match"
+    # Long after the last pause, a new 429 starts again at a minute.
+    house._blocked_until = house._last_request = 0.0
+    house._limit_ended = time.monotonic() - listener.RATE_LIMIT_MEMORY_SECONDS - 1
+    try:
+        asyncio.run(house.recognize(_music(12)))
+    except listener.RateLimited:
+        pass
+    assert house._backoff == 60, house._backoff
 
 
 def check_enrich():
