@@ -23,7 +23,7 @@ they want. A room scrobbles for nobody until then, except for the
 administrator who added it. A song that two rooms hear at once is still one play for
 someone who receives both.
 
-![The Rooms tab: a turntable playing Dreams by Fleetwood Mac and a kitchen camera that listens every 30 seconds, each with a live level meter and a scrobble for me switch, and an office microphone that is turned off](images/rooms.png)
+![The Rooms tab: a turntable playing Dreams by Fleetwood Mac, known, asking again in 2:33, and a kitchen camera that listens every 30 seconds, each with a live level meter and a scrobble for me switch, and an office microphone that is turned off](images/rooms.png)
 
 An administrator also sees how often Shazam is asked, below the rooms:
 
@@ -161,7 +161,10 @@ through the ISRC that Shazam returns, and the room asks again a few seconds
 before the end, so the next song is caught as it starts. A song changed half-way
 is noticed within `SKIP_KNOWN_SECONDS`. Silence makes the room forget the song
 at once. While music plays this saves most requests, so more rooms fit within
-the rate limit. Set `SKIP_KNOWN_SECONDS=0` to ask every cycle.
+the rate limit. Set `SKIP_KNOWN_SECONDS=0` to ask every cycle. The Rooms tab
+shows it next to the song, *known, asks again in 2:33*, and hovering it says how
+many requests the room has saved. The Listening tab's phone microphone skips a
+known song the same way.
 
 **A room can listen at its own pace.** Set **Listen every** in the room's form,
 12 to 600 seconds, to make one room ask less often than the rest, such as a

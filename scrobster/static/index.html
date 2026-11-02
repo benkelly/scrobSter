@@ -396,6 +396,18 @@ function roomState(r) {
 
 const roomDot = r => r.running ? (r.last_error ? " err" : " live") : "";
 
+// "1:05" or "45 s", for a pause that counts down.
+const clock = s => s >= 60 ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : `${s} s`;
+
+// While a room hears a song it matched twice it does not ask Shazam, which
+// saves requests for the other rooms. Say so, and when it asks again.
+function roomKnown(r) {
+  if (!r.running || !r.known_for) return "";
+  const saved = r.skipped ? ` It has saved ${r.skipped} request${r.skipped === 1 ? "" : "s"} so far.` : "";
+  return ` <span class="muted" title="It matched this song twice, so it does not ask Shazam until the song should end.${saved}">`
+    + `&middot; known, asks again in ${clock(r.known_for)}</span>`;
+}
+
 function roomLive(r) {
   const m = r.last_match;
   const fresh = m && r.running && Date.now() / 1000 - m.ts < stopSeconds;
@@ -403,7 +415,8 @@ function roomLive(r) {
     ? `${m.art_url ? `<img src="${esc(m.art_url)}" alt="" loading="lazy">` : ""}
       <span class="grow"><b>${ext(shazamUrl(m), esc(m.title), "plain")}</b>
       <span class="sub">${esc(m.artist)}
-      <span class="muted">&middot; ${fresh ? `<span class="ok">playing now</span>` : when(m.ts)}</span></span></span>`
+      <span class="muted">&middot; ${fresh ? `<span class="ok">playing now</span>` : when(m.ts)}</span>${
+        fresh ? roomKnown(r) : ""}</span></span>`
     : roomState(r);
   return `<div class="room-now grow">${now}</div>
     ${r.running ? levelMeter : ""}`;
@@ -662,10 +675,10 @@ const micNote = (t, kind = "", html = false) => {
 };
 
 // "trying again in 12 s", counting down, until the next note replaces it.
-function micCountdown(text, until, kind = "") {
+function micCountdown(text, until, kind = "", again = "trying again in") {
   const paint = () => {
     const left = Math.max(0, Math.ceil((until - Date.now()) / 1000));
-    $("#micnote").textContent = `${text}, trying again in ${left} s.`;
+    $("#micnote").textContent = `${text}, ${again} ${clock(left)}.`;
     if (!left) { clearInterval(micWait); micWait = 0; }
   };
   micNote("", kind);
@@ -679,6 +692,8 @@ function micResult(j) {
   } else if (j.skipped === "silent") {
     micNote(`Too quiet to identify (input ${j.level_db} dBFS), so Shazam was not asked.`
             + " Move closer to the music, or pick another microphone.", "warn");
+  } else if (j.skipped === "known") {
+    micNote("Still the same song, so Shazam was not asked. Listening again…");
   } else if (j.skipped === "quiet") {
     micNote(`Too quiet to be music (floor ${j.floor_db} dBFS), so Shazam was not asked.`
             + " Listening again…", "warn");
@@ -769,7 +784,8 @@ const mic = window.ScrobsterMic ? ScrobsterMic.create({
       case "waiting":
         // Between two clips at the chosen interval: keep what the last clip said.
         if (info.reason === "cadence") break;
-        if (info.reason === "busy") micCountdown("Shazam is busy", info.until, "warn");
+        if (info.reason === "known") micCountdown("Still the same song, so Shazam is not asked", info.until, "", "listening again in");
+        else if (info.reason === "busy") micCountdown("Shazam is busy", info.until, "warn");
         else if (info.reason === "network") micCountdown("The server cannot be reached", info.until, "err");
         else micCountdown(`The server could not identify the clip (${micError(info.error)})`, info.until, "err");
         break;

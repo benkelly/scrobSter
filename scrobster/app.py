@@ -14,6 +14,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import math
 import pathlib
 import secrets
 import time
@@ -28,7 +29,7 @@ from . import __version__
 from .listener import (BROWSER_OFF_WAIT_SECONDS, REQUEST_WINDOW_SECONDS, SILENT_DBFS,
                        Listener, RateLimited,
                        decode_to_wav, floor_dbfs, is_quiet, list_devices, peak_dbfs,
-                       probe_level)
+                       probe_level, wav_seconds)
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 # /api/events sends a comment this often, so proxies keep the stream open.
@@ -337,6 +338,8 @@ def _room_public(row, user, mine) -> dict:
            "attempts": live.attempts if live else 0,
            "skipped": live.skipped if live else 0,
            "failing_since": live.outage.since if live else None,
+           # Seconds it may still go without asking, as it hears a song it knows.
+           "known_for": math.ceil(max(0.0, live.known_until - time.monotonic())) if live else 0,
            "last_attempt": live.last_attempt if live else None,
            # Its own seconds between listens, or None, and the seconds it uses.
            "interval": row.get("interval"),
@@ -528,7 +531,11 @@ async def match(request: Request, user: dict = Depends(require_user)):
     skipped = ("silent" if level < SILENT_DBFS
                else "quiet" if is_quiet(floor, config.QUIET_DBFS) else None)
     if skipped:
+        listener.mic_forget(user["id"])  # the song ended
         return {"match": None, "level_db": level, "floor_db": floor, "skipped": skipped}
+    if listener.mic_known_for(user["id"]):
+        # A page that did not ask first: still the song it matched twice.
+        return {"match": None, "level_db": level, "floor_db": floor, "skipped": "known"}
     try:
         found = await listener.match_bytes(wav, source="browser", users=[user])
     except RateLimited as e:
@@ -538,6 +545,7 @@ async def match(request: Request, user: dict = Depends(require_user)):
     except Exception as e:
         log.warning("browser clip failed: %s", e)
         raise HTTPException(502, f"recognition failed: {str(e) or type(e).__name__}")
+    listener.mic_heard(user["id"], found, wav_seconds(wav))
     return {"match": found, "level_db": level, "floor_db": floor, "skipped": None}
 
 

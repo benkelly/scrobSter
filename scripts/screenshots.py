@@ -451,6 +451,9 @@ def warm_up(turntable_id, kitchen_id, kitchen_heard):
     tt.last_match = {**listener.parse_track(shazam_result(artist, title, album, offset)),
                      "ts": int(now - 20), "source": "server", "room": tt.name,
                      "room_id": tt.id}
+    # It matched Dreams twice, so it skips Shazam until the song should end.
+    tt.known_key, tt.known_until = tt.last_match["track_key"], time.monotonic() + 154
+    tt.skipped = 87
     kitchen.last_match = {**listener.parse_track(shazam_result(
         "Bill Withers", "Lovely Day", "Menagerie", 60)),
         "ts": kitchen_heard, "source": "server", "room": kitchen.name,

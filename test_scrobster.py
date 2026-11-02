@@ -272,6 +272,7 @@ def main():
     check_display_scope_migration()
     check_room_interval()
     check_mic_interval()
+    check_known_song()
     check_browser_room()
     check_install()
     print("ok")
@@ -2710,6 +2711,78 @@ def check_mic_interval():
             assert me["mic_interval"] is None, "a refused value changes nothing"
         finally:
             config.DB_PATH, config.MATCH_INTERVAL, app.listener._blocked_until = saved
+
+
+def check_known_song():
+    """A phone's microphone skips a song it matched twice, as a room does, and
+    a room says how long it still knows its song."""
+    import time
+    from scrobster import accounts, app, config, db, rooms
+
+    asked = []
+
+    async def fake_recognize(wav):
+        asked.append(wav)
+        return {"matches": [{"offset": 40}],
+                "track": {"key": "k9", "title": "Song", "subtitle": "Band"}}
+
+    async def fake_decode(data):
+        return {b"music": _tone(8000), b"silence": _wav(0)}[data]
+
+    with tempfile.TemporaryDirectory() as d:
+        saved = (config.DB_PATH, config.SKIP_KNOWN_SECONDS, config.QUIET_DBFS,
+                 config.RECOGNITION_GAP_SECONDS, app.decode_to_wav,
+                 app.listener._shazam.recognize, app.listener._blocked_until,
+                 app.listener._mic_known, app.listener.rooms)
+        config.DB_PATH = os.path.join(d, "known.db")
+        config.SKIP_KNOWN_SECONDS, config.QUIET_DBFS, config.RECOGNITION_GAP_SECONDS = 60, None, 0
+        app.decode_to_wav, app.listener._shazam.recognize = fake_decode, fake_recognize
+        app.listener._blocked_until, app.listener._mic_known, app.listener.rooms = 0.0, {}, {}
+        try:
+            db.init()
+            ann = accounts.create_user("ann", "password123")
+            auth = {"authorization": f"Bearer {ann['api_token']}"}
+            listen = lambda: json.loads(_request(app.app, "/api/match/listen", auth)[2])
+            clip = lambda body: json.loads(_request(app.app, "/api/match", auth, "POST", body)[2])
+
+            # One match is not enough to skip: a wrong match must not silence it.
+            assert clip(b"music")["match"]["track_key"] == "k9"
+            assert listen()["record"] and app.listener.mic_known_for(ann["id"]) == 0
+            # Twice in a row, and it is known for up to SKIP_KNOWN_SECONDS.
+            clip(b"music")
+            got = listen()
+            assert not got["record"] and got["reason"] == "known", got
+            assert 40 <= got["wait"] <= 60, got
+            # A page that sends anyway is answered without asking Shazam.
+            before = len(asked)
+            assert clip(b"music")["skipped"] == "known" and len(asked) == before
+            # Busy outranks known: the page waits for whichever says so first.
+            app.listener._blocked_until = time.monotonic() + 300
+            assert listen()["reason"] == "busy"
+            app.listener._blocked_until = 0.0
+            # Silence ends the song.
+            assert clip(b"silence")["skipped"] == "silent"
+            assert listen()["record"] and app.listener.mic_known_for(ann["id"]) == 0
+            # Each user has their own: ann's song says nothing about bob's phone.
+            bob = accounts.create_user("bob", "password123")
+            clip(b"music"); clip(b"music")
+            assert app.listener.mic_advice(bob)["record"]
+
+            # A room says how long it still knows its song.
+            hall = rooms.add_room(name="Hall", kind="device")
+            import asyncio
+            asyncio.run(app.listener.sync_rooms())
+            live = app.listener.rooms[hall["id"]]
+            live.known_until = time.monotonic() + 75
+            row = {r["id"]: r for r in app._rooms_for(ann)}[hall["id"]]
+            assert 74 <= row["known_for"] <= 75, row
+            live.known_until = 0.0
+            assert {r["id"]: r for r in app._rooms_for(ann)}[hall["id"]]["known_for"] == 0
+        finally:
+            (config.DB_PATH, config.SKIP_KNOWN_SECONDS, config.QUIET_DBFS,
+             config.RECOGNITION_GAP_SECONDS, app.decode_to_wav,
+             app.listener._shazam.recognize, app.listener._blocked_until,
+             app.listener._mic_known, app.listener.rooms) = saved
 
 
 def check_browser_room():
