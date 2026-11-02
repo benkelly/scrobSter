@@ -687,6 +687,8 @@ class Room:
         self.url = row["url"] if row["kind"] == "stream" else None
         self.backend = row["backend"]
         self.device = row["device"]
+        # The room's own seconds between listens, or None for MATCH_INTERVAL.
+        self.interval = row.get("interval")
         self._input = (self.kind, self.backend, self.device, self.url)
         return before is not None and before != self._input
 
@@ -716,6 +718,12 @@ class Room:
             return None
         recent = [db for t, db in self._live_levels if t >= now - LEVEL_SHOW_SECONDS]
         return max(recent or [self._live_levels[-1][1]])
+
+    @property
+    def every(self) -> int:
+        """Seconds between listens here: the room's own, or MATCH_INTERVAL.
+        Read each cycle, so a change to either applies at once."""
+        return self.interval or config.MATCH_INTERVAL
 
     def capture_args(self) -> dict:
         if self.kind == "stream":
@@ -802,11 +810,14 @@ class Listener:
                 room = self.rooms[room_id] = Room(row)
             else:
                 was_browser = room.kind == "browser"
+                every = room.every
                 if room.update(row):
                     room.reset_input()
                     if was_browser != (room.kind == "browser"):
                         # A capture loop and a browser's watch are different tasks.
                         await room.stop()
+                if room.every != every:
+                    self._wake_waits()
             if self.running and room.enabled:
                 self._start_room(room)
             elif room.running:
@@ -846,11 +857,14 @@ class Listener:
         for user_id in marks:
             await scrobble.clear_now_playing_all(accounts.get_credentials(user_id))
 
-    def rates_changed(self):
+    def _wake_waits(self):
         """Wake every room between cycles, so a new interval applies now rather
         than after the old, possibly long, wait."""
         self._rates_changed.set()
         self._rates_changed.clear()
+
+    def rates_changed(self):
+        self._wake_waits()
         events.emit("rates")
 
     def save_rates(self, gap=None, interval=None):
@@ -907,7 +921,7 @@ class Listener:
 
     async def _loop(self, room):
         log.info("listening in %s: %s, one match per %ss",
-                 room.name, room.describe(), config.MATCH_INTERVAL)
+                 room.name, room.describe(), room.every)
         while True:
             cycle_start = time.monotonic()
             try:
@@ -925,9 +939,9 @@ class Listener:
             except Exception as e:
                 self.room_failed(room, e)
                 await self._until_next_cycle(
-                    cycle_start, room.outage.retry_after(config.MATCH_INTERVAL))
+                    cycle_start, lambda: room.outage.retry_after(room.every))
                 continue
-            await self._until_next_cycle(cycle_start)
+            await self._until_next_cycle(cycle_start, lambda: room.every)
 
     async def hear(self, room, wav, cycle_start) -> dict:
         """Handle one clip a room heard, from its own capture or from a browser.
@@ -999,17 +1013,18 @@ class Listener:
 
     # --- a browser room: the clips come over HTTP ---------------------------
 
-    def browser_timeout(self) -> float:
+    def browser_timeout(self, room=None) -> float:
         """A browser room that sends nothing for this long counts as failing:
         two cycles, and never less than BROWSER_TIMEOUT_MIN_SECONDS."""
-        return max(BROWSER_TIMEOUT_MIN_SECONDS, 2 * config.MATCH_INTERVAL)
+        every = room.every if room else config.MATCH_INTERVAL
+        return max(BROWSER_TIMEOUT_MIN_SECONDS, 2 * every)
 
     async def _watch(self, room):
         """What a browser room runs in place of a capture loop: it records
         nothing, and only notices when the browser stops sending."""
         log.info("listening in %s: clips from a browser, one per %ss",
-                 room.name, config.MATCH_INTERVAL)
-        room.expect_by = time.monotonic() + self.browser_timeout()
+                 room.name, room.every)
+        room.expect_by = time.monotonic() + self.browser_timeout(room)
         while True:
             await asyncio.sleep(BROWSER_CHECK_SECONDS)
             self.check_browser(room)
@@ -1020,7 +1035,7 @@ class Listener:
         now = time.monotonic() if now is None else now
         if now < room.expect_by:
             return
-        room.expect_by = now + self.browser_timeout()
+        room.expect_by = now + self.browser_timeout(room)
         # What it last heard is no longer known to go on.
         room.known_key, room.known_until = None, 0.0
         self.room_failed(room, BROWSER_GONE)
@@ -1037,15 +1052,15 @@ class Listener:
         elif now < room.known_until:
             wait, reason = room.known_until - now, "known"
         if wait and room.running:
-            room.expect_by = max(room.expect_by, now + wait + self.browser_timeout())
+            room.expect_by = max(room.expect_by, now + wait + self.browser_timeout(room))
         clip = segment_seconds(config.CHUNK_SECONDS)
         return {"record": not wait, "wait": math.ceil(wait), "reason": reason,
-                "clip_seconds": clip, "interval": config.MATCH_INTERVAL}
+                "clip_seconds": clip, "interval": room.every}
 
     async def hear_browser(self, room, wav) -> dict:
         """One clip a browser room's page sent. The same as a capture, from
         the moment the clip was recorded."""
-        room.expect_by = time.monotonic() + self.browser_timeout()
+        room.expect_by = time.monotonic() + self.browser_timeout(room)
         with wave.open(io.BytesIO(wav)) as w:
             seconds = w.getnframes() / (w.getframerate() or 16000)
         try:
@@ -1067,10 +1082,11 @@ class Listener:
 
     async def _until_next_cycle(self, cycle_start, interval=None):
         """Wait out MATCH_INTERVAL, or `interval`, from the start of the cycle.
-        A rate change wakes the wait, which then measures again against the new
-        interval."""
+        `interval` may be a function, read again after each wake. A rate change
+        wakes the wait, which then measures again against the new interval."""
         while True:
-            left = (interval or config.MATCH_INTERVAL) - (time.monotonic() - cycle_start)
+            every = interval() if callable(interval) else interval
+            left = (every or config.MATCH_INTERVAL) - (time.monotonic() - cycle_start)
             if left <= 0:
                 return
             try:

@@ -329,7 +329,10 @@ def _room_public(row, user, mine) -> dict:
            "attempts": live.attempts if live else 0,
            "skipped": live.skipped if live else 0,
            "failing_since": live.outage.since if live else None,
-           "last_attempt": live.last_attempt if live else None}
+           "last_attempt": live.last_attempt if live else None,
+           # Its own seconds between listens, or None, and the seconds it uses.
+           "interval": row.get("interval"),
+           "every": row.get("interval") or config.MATCH_INTERVAL}
     if user["is_admin"]:
         out.update(backend=row["backend"], device=row["device"],
                    url=rooms.mask_url(row["url"]),
@@ -525,8 +528,8 @@ async def match(request: Request, user: dict = Depends(require_user)):
 # --- rooms ---------------------------------------------------------------------
 
 def _room_fields(body: dict) -> dict:
-    return {k: body.get(k) for k in ("name", "kind", "backend", "device", "url", "enabled")
-            if k in body}
+    return {k: body.get(k) for k in ("name", "kind", "backend", "device", "url", "enabled",
+                                     "interval") if k in body}
 
 
 @app.get("/api/rooms")
@@ -765,6 +768,8 @@ def _rates_state() -> dict:
                    "interval": config.MATCH_INTERVAL_RANGE},
         # Rooms that would ask while music plays, which is what the rate must carry.
         "rooms_on": sum(1 for room in listener.rooms.values() if room.enabled),
+        # Their own intervals, None where a room follows `interval`.
+        "room_intervals": [room.interval for room in listener.rooms.values() if room.enabled],
         "requests": listener.requests_recently(),
         "window_seconds": REQUEST_WINDOW_SECONDS,
         "last_rate_limited": listener.last_rate_limited,
