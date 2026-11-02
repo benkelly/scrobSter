@@ -777,7 +777,9 @@ class Listener:
         self._blocked_until = 0.0  # monotonic, set by a 429
         self._backoff = 0  # seconds, grows while Shazam answers 429
         self._limit_ended = 0.0  # monotonic, when the last pause ran out
-        self._requests = collections.deque()  # monotonic time of each request
+        # (monotonic time, who) of each request. `who` is ("room", room id),
+        # ("mic", user id) for someone's own browser microphone, or None.
+        self._requests = collections.deque()
         self.last_rate_limited = None  # unix time of the last 429
         # Set and cleared at once, to wake every room's wait after a rate change.
         self._rates_changed = asyncio.Event()
@@ -895,17 +897,23 @@ class Listener:
     def requests_recently(self) -> int:
         """Shazam requests in the last REQUEST_WINDOW_SECONDS, for tuning."""
         cutoff = time.monotonic() - REQUEST_WINDOW_SECONDS
-        while self._requests and self._requests[0] < cutoff:
+        while self._requests and self._requests[0][0] < cutoff:
             self._requests.popleft()
         return len(self._requests)
+
+    def requests_by_source(self) -> dict:
+        """The same requests, counted by who asked: {who: count}."""
+        self.requests_recently()
+        return dict(collections.Counter(who for _, who in self._requests))
 
     def rate_limited_for(self) -> float:
         """Seconds until Shazam may be asked again after a 429, or 0."""
         return max(0.0, self._blocked_until - time.monotonic())
 
-    async def recognize(self, wav: bytes):
+    async def recognize(self, wav: bytes, who=None):
         """Ask Shazam, one request at a time and no closer together than
-        RECOGNITION_GAP_SECONDS, so adding rooms does not add to the rate."""
+        RECOGNITION_GAP_SECONDS, so adding rooms does not add to the rate.
+        `who` is counted against the request, see requests_by_source()."""
         async with self._shazam_lock:
             wait = self.rate_limited_for()
             if wait:
@@ -914,7 +922,7 @@ class Listener:
             if gap > 0:
                 await asyncio.sleep(gap)
             self._last_request = time.monotonic()
-            self._requests.append(self._last_request)
+            self._requests.append((self._last_request, who))
             self.requests_recently()  # keeps the window from growing
             try:
                 result = await self._shazam.recognize(wav)
@@ -1172,7 +1180,11 @@ class Listener:
         passes only the user who recorded the clip, because that listen is
         theirs alone.
         """
-        info = parse_track(await self.recognize(wav))
+        if room is not None:
+            who = ("room", room.id)
+        else:
+            who = ("mic", users[0]["id"]) if users else None
+        info = parse_track(await self.recognize(wav, who))
         if not (info and info["track_key"]):
             return None
         if users is None:

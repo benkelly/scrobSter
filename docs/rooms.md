@@ -27,7 +27,7 @@ someone who receives both.
 
 An administrator also sees how often Shazam is asked, below the rooms:
 
-![The Recognition card: 4 seconds between Shazam requests, 15 seconds between listens in each room, enough for two rooms with one at its own interval, and the request count of the last ten minutes](images/rooms-recognition.png)
+![The Recognition card: 4 seconds between Shazam requests, 15 seconds between listens in each room, enough for two rooms with one at its own interval, the request count of the last ten minutes, and who asked: the kitchen camera 17 times, the turntable 9 and alex's microphone 6](images/rooms-recognition.png)
 
 A camera reaches its room directly, or through a restream:
 
@@ -175,7 +175,9 @@ as a tag, and a change applies at once.
 An administrator tunes both rates under **Recognition** on the Rooms tab, and a
 change applies at once. The card counts the requests of the last ten minutes,
 says when Shazam last limited them, and warns when the rooms that are on would
-want requests faster than the limit allows. A rate chosen there outranks
+want requests faster than the limit allows. Under **Who asked** it lists each
+room and each person's own phone or browser microphone with its requests and a
+bar for its share, most first, so you can see which one to slow down. A rate chosen there outranks
 `RECOGNITION_GAP_SECONDS` and `MATCH_INTERVAL`, until **Back to the configured
 rates**.
 
