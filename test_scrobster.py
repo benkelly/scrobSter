@@ -1851,6 +1851,41 @@ def check_librefm_scrobble():
     assert not any("[" in key for _, _, p in sent for key in p), "no indexed keys"
     assert scrobbled == [{"artist": "A", "title": "T", "album": "Al", "timestamp": 5}]
 
+    # A rejection logs what was sent, with the session key and signature hidden.
+    import logging
+
+    class Rejected:
+        def __init__(self, network, method, params):
+            self.params = dict(params, api_key="key", method=method,
+                               sk="session-secret", api_sig="sig-secret")
+
+        def execute(self):
+            raise pylast.WSError(None, "6", "Invalid parameters - Your request "
+                                 "is missing a required parameter")
+
+    class LibreNetwork:
+        ws_server = ("libre.fm", "/2.0/")
+
+    seen = []
+
+    class Catch(logging.Handler):
+        def emit(self, record):
+            seen.append(record.getMessage())
+    catch = Catch()
+    logging.getLogger("scrobster").addHandler(catch)
+    pylast._Request, scrobble._pylast_network = Rejected, lambda service, data: LibreNetwork()
+    try:
+        scrobble._pylast_scrobble("librefm", {}, "A", "T", None, 5)
+        raise AssertionError("the rejection must still raise")
+    except pylast.WSError:
+        pass
+    finally:
+        pylast._Request, scrobble._pylast_network = saved
+        logging.getLogger("scrobster").removeHandler(catch)
+    said = " ".join(seen)
+    assert "error 6" in said and "libre.fm/2.0/" in said and "'track': 'T'" in said, said
+    assert "secret" not in said and "'key'" not in said, said
+
 
 
 def check_outage():
