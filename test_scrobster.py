@@ -859,6 +859,16 @@ def check_rooms():
         pass
     said = rooms.redact(f"{url}: Connection refused, s3cr@t and s3cr%40t", url)
     assert "s3cr" not in said and "cam.local" in said, said
+    # UniFi Protect puts the camera's secret in the path, not a password.
+    unifi = "rtsps://192.168.1.1:7441/wvyFMIMiNBr295dM?enableSrtp"
+    assert rooms.log_url(unifi) == "rtsps://192.168.1.1:7441/***", rooms.log_url(unifi)
+    assert rooms.log_url(url) == "rtsps://viewer:***@cam.local:7441/***"
+    assert rooms.log_url("rtsp://cam.local") == "rtsp://cam.local"
+    assert rooms.mask_url(unifi) == unifi, "the page keeps the path, so it can be edited"
+    said = rooms.redact(f"{unifi}: 404 Not Found, stream wvyFMIMiNBr295dM missing", unifi)
+    assert "wvyFM" not in said and "192.168.1.1" in said, said
+    assert rooms.redact("rtsp://cam/live: the live feed refused", "rtsp://cam/live") == \
+        "rtsp://cam/***: the live feed refused", "a short path hides no ordinary words"
     for bad in ("file:///etc/passwd", "/dev/snd", "rtsp://", "rtsp://cam/a b"):
         try:
             rooms.check_url(bad)

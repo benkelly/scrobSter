@@ -62,7 +62,9 @@ Tips for cameras:
   self-signed certificate is accepted.
 - **The camera password stays on the server.** The page shows it as `***`,
   and leaving `***` in place keeps it when you edit the URL. Errors are
-  cleaned of it before anyone sees them.
+  cleaned of it before anyone sees them. The log and errors also hide the
+  URL's path, because UniFi Protect's path is a token that opens the camera.
+  A log is safe to paste into an issue.
 - **Audio stays on your network.** Each clip lives in a temporary file. Only
   the fingerprint, computed locally, goes to Shazam.
 - **Anything ffmpeg can read works**, not only cameras. A home-made device,

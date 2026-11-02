@@ -3,7 +3,9 @@
 A room is a microphone on this machine or a stream, such as a camera's RTSP or
 RTSPS feed. A camera URL usually carries a password, so the password never
 leaves the server: the API shows it as MASK, and error text from ffmpeg is
-redacted before anybody can read it.
+redacted before anybody can read it. Some cameras put the secret in the path
+instead, such as UniFi Protect's rtsps://host:7441/<token>, so the log and
+error text hide the path as well.
 
 A browser room has no input on the server. A browser in the room, such as a
 tablet by the hi-fi, records the clips and sends them with a room token.
@@ -43,6 +45,24 @@ def mask_url(url):
     return parts._replace(netloc=netloc).geturl()
 
 
+def log_url(url):
+    """The URL with its password and its path hidden, safe for the log and for
+    error text. UniFi Protect's path is a token that opens the camera, and a
+    log is often pasted into an issue. The page still shows the path, through
+    mask_url, so a room can be edited."""
+    if not url:
+        return url
+    parts = urlsplit(mask_url(url))
+    if parts.path in ("", "/") and not parts.query:
+        return parts.geturl()
+    return parts._replace(path=f"/{MASK}", query="", fragment="").geturl()
+
+
+def _path_secret(url):
+    """The first path segment, the part UniFi Protect uses as the token."""
+    return urlsplit(url).path.strip("/").partition("/")[0]
+
+
 def merge_url(new, old):
     """Apply an edited URL. A password still shown as MASK keeps the saved one,
     so the form can change a path without asking for the password again."""
@@ -62,13 +82,18 @@ def redact(text, url):
     the input it could not open."""
     if not text or not url:
         return text
-    text = text.replace(url, mask_url(url))
+    text = text.replace(url, log_url(url)).replace(mask_url(url), log_url(url))
     password = _password(url)
     # A very short password would also hide ordinary letters. The full URL,
     # which is what ffmpeg quotes, is already gone.
     if password and len(password) >= 4:
         for form in {password, unquote(password)}:
             text = text.replace(form, MASK)
+    # A path segment as long as a token is hidden too, in case ffmpeg quotes
+    # the path alone. A short one, such as "live", is left readable.
+    token = _path_secret(url)
+    if len(token) >= 12:
+        text = text.replace(token, MASK)
     return text
 
 

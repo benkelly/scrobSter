@@ -701,7 +701,7 @@ class Room:
 
     def describe(self) -> str:
         if self.kind == "stream":
-            return rooms.mask_url(self.url)
+            return rooms.log_url(self.url)
         if self.kind == "browser":
             return "clips from a browser in the room"
         args = self.capture_args()
