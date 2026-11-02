@@ -438,6 +438,7 @@ def seed():
 
 
 def warm_up(turntable_id, kitchen_id, kitchen_heard):
+    alex_id = accounts.get_user_by_name(ADMIN)["id"]
     """Make the rooms look like they have been listening for a while."""
     live = app.listener
     now = time.time()
@@ -458,9 +459,13 @@ def warm_up(turntable_id, kitchen_id, kitchen_heard):
         "Bill Withers", "Lovely Day", "Menagerie", 60)),
         "ts": kitchen_heard, "source": "server", "room": kitchen.name,
         "room_id": kitchen.id}
-    # Two rooms at one request per 15 s, less the cycles a known song skipped.
+    # Two rooms, the camera at its own 30 s, less the cycles a known song
+    # skipped, and a phone for a while.
     mono = time.monotonic()
-    live._requests.extend(sorted(mono - rng.uniform(5, 590) for _ in range(31)))
+    asked = ([("room", turntable_id)] * 9 + [("room", kitchen_id)] * 17
+             + [("mic", alex_id)] * 6)
+    live._requests.extend(sorted(((mono - rng.uniform(5, 590), who) for who in asked),
+                                 key=lambda r: r[0]))
 
 
 # --- 5. run it, and point a browser at it ------------------------------------------

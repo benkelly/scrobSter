@@ -782,6 +782,28 @@ _RATES = {"gap": ("recognition_gap_seconds", config.RECOGNITION_GAP_RANGE, float
           "interval": ("match_interval", config.MATCH_INTERVAL_RANGE, int)}
 
 
+def _request_sources() -> list[dict]:
+    """Who used the Shazam requests of the last REQUEST_WINDOW_SECONDS, most
+    first: each room, each person's own browser microphone, and any other."""
+    out = []
+    for who, count in listener.requests_by_source().items():
+        kind, key = who if who else ("other", None)
+        entry = {"kind": kind, "id": key, "requests": count,
+                 "per_minute": round(count / (REQUEST_WINDOW_SECONDS / 60), 1)}
+        if kind == "room":
+            live = listener.rooms.get(key)
+            entry.update(name=live.name if live else "a removed room",
+                         every=live.every if live else None)
+        elif kind == "mic":
+            user = accounts.get_user(key)
+            entry.update(name=f"{user['username']}'s microphone" if user else "a removed account",
+                         every=accounts.mic_every(user) if user else None)
+        else:
+            entry.update(name="other", every=None)
+        out.append(entry)
+    return sorted(out, key=lambda e: (-e["requests"], e["name"]))
+
+
 def _rates_state() -> dict:
     return {
         "gap": config.RECOGNITION_GAP_SECONDS, "interval": config.MATCH_INTERVAL,
@@ -795,6 +817,7 @@ def _rates_state() -> dict:
         # Their own intervals, None where a room follows `interval`.
         "room_intervals": [room.interval for room in listener.rooms.values() if room.enabled],
         "requests": listener.requests_recently(),
+        "sources": _request_sources(),
         "window_seconds": REQUEST_WINDOW_SECONDS,
         "last_rate_limited": listener.last_rate_limited,
         "rate_limited_for": round(listener.rate_limited_for()),

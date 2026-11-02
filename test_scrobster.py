@@ -1261,10 +1261,13 @@ def check_rates():
                 raise listener_mod.RateLimited("slow down")
             return {}
         house._shazam.recognize = answer
-        house._requests.append(time.monotonic() - listener_mod.REQUEST_WINDOW_SECONDS - 1)
-        for _ in range(3):
-            asyncio.run(house.recognize(b""))
+        house._requests.append((time.monotonic() - listener_mod.REQUEST_WINDOW_SECONDS - 1,
+                                ("room", 9)))
+        for who in (("room", 1), ("room", 1), ("mic", 4)):
+            asyncio.run(house.recognize(b"", who))
         assert house.requests_recently() == 3, "an old request falls out of the count"
+        assert house.requests_by_source() == {("room", 1): 2, ("mic", 4): 1}, \
+            house.requests_by_source()
         assert house.last_rate_limited is None
         try:
             asyncio.run(house.recognize(b"429"))
@@ -1851,7 +1854,7 @@ def check_known_song():
             await asyncio.sleep(0)
             return heard.pop(0) if heard else quiet
 
-        async def recognize(wav):
+        async def recognize(wav, who=None):
             asked.append(wav)
             return {"track": {"key": "k", "title": "T", "subtitle": "A", "isrc": "X"},
                     "matches": [{"offset": 50.0}]}
@@ -2136,7 +2139,7 @@ def check_quiet():
             await asyncio.sleep(0)
             return heard.pop(0) if heard else _wav(0)
 
-        async def recognize(wav):
+        async def recognize(wav, who=None):
             asked.append(wav)
             if wav is vinyl:
                 return {}
@@ -2733,8 +2736,9 @@ def check_known_song():
         saved = (config.DB_PATH, config.SKIP_KNOWN_SECONDS, config.QUIET_DBFS,
                  config.RECOGNITION_GAP_SECONDS, app.decode_to_wav,
                  app.listener._shazam.recognize, app.listener._blocked_until,
-                 app.listener._mic_known, app.listener.rooms)
+                 app.listener._mic_known, app.listener.rooms, app.listener._requests)
         config.DB_PATH = os.path.join(d, "known.db")
+        app.listener._requests = collections.deque()
         config.SKIP_KNOWN_SECONDS, config.QUIET_DBFS, config.RECOGNITION_GAP_SECONDS = 60, None, 0
         app.decode_to_wav, app.listener._shazam.recognize = fake_decode, fake_recognize
         app.listener._blocked_until, app.listener._mic_known, app.listener.rooms = 0.0, {}, {}
@@ -2743,7 +2747,8 @@ def check_known_song():
             ann = accounts.create_user("ann", "password123")
             auth = {"authorization": f"Bearer {ann['api_token']}"}
             listen = lambda: json.loads(_request(app.app, "/api/match/listen", auth)[2])
-            clip = lambda body: json.loads(_request(app.app, "/api/match", auth, "POST", body)[2])
+            clip = lambda body, who=auth: json.loads(
+                _request(app.app, "/api/match", who, "POST", body)[2])
 
             # One match is not enough to skip: a wrong match must not silence it.
             assert clip(b"music")["match"]["track_key"] == "k9"
@@ -2765,8 +2770,12 @@ def check_known_song():
             assert listen()["record"] and app.listener.mic_known_for(ann["id"]) == 0
             # Each user has their own: ann's song says nothing about bob's phone.
             bob = accounts.create_user("bob", "password123")
+            bob_auth = {"authorization": f"Bearer {bob['api_token']}"}
             clip(b"music"); clip(b"music")
+            assert not app.listener.mic_advice(ann)["record"]
             assert app.listener.mic_advice(bob)["record"]
+            clip(b"music", bob_auth); clip(b"music", bob_auth)
+            assert not app.listener.mic_advice(bob)["record"]
 
             # A room says how long it still knows its song.
             hall = rooms.add_room(name="Hall", kind="device")
@@ -2778,11 +2787,25 @@ def check_known_song():
             assert 74 <= row["known_for"] <= 75, row
             live.known_until = 0.0
             assert {r["id"]: r for r in app._rooms_for(ann)}[hall["id"]]["known_for"] == 0
+
+            # The Recognition card counts who asked: ann's phone four times,
+            # bob's twice, and two rooms once each, most first.
+            app.listener._requests.append((time.monotonic(), ("room", hall["id"])))
+            app.listener._requests.append((time.monotonic(), ("room", 999)))
+            sources = app._rates_state()["sources"]
+            named = {s["name"]: s for s in sources}
+            assert named["ann's microphone"]["requests"] == 4, sources
+            assert named["bob's microphone"]["requests"] == 2
+            assert named["ann's microphone"]["every"] == config.MATCH_INTERVAL
+            assert named["Hall"]["requests"] == 1 and named["Hall"]["kind"] == "room"
+            assert named["a removed room"]["requests"] == 1
+            assert [s["requests"] for s in sources] == [4, 2, 1, 1], "most first"
+            assert named["Hall"]["per_minute"] == round(1 / 10, 1)
         finally:
             (config.DB_PATH, config.SKIP_KNOWN_SECONDS, config.QUIET_DBFS,
              config.RECOGNITION_GAP_SECONDS, app.decode_to_wav,
              app.listener._shazam.recognize, app.listener._blocked_until,
-             app.listener._mic_known, app.listener.rooms) = saved
+             app.listener._mic_known, app.listener.rooms, app.listener._requests) = saved
 
 
 def check_browser_room():
