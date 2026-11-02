@@ -222,7 +222,8 @@ def main():
     assert not should_clear(1000 + stop_after - 1, 1000, ("a", 1000), stop_after)
     assert should_clear(1000 + stop_after, 1000, ("a", 1000), stop_after), "music stopped"
 
-    # oversized fingerprint windows stop matching, so they must be capped
+    # a browser clip keeps no more than the 12s that is fingerprinted
+    assert MAX_SEGMENT_SECONDS == 12, "the window Shazam's apps send, and shazamio's"
     assert segment_seconds(10) == 10, "short window passes through"
     assert segment_seconds(12) == 12
     assert segment_seconds(30) == MAX_SEGMENT_SECONDS, "oversized window is capped"
@@ -252,6 +253,7 @@ def main():
     check_client_cache()
     check_privacy()
     check_keep_listening()
+    check_shazamio()
     check_enrich()
     check_rooms()
     check_server_mic_room()
@@ -594,6 +596,91 @@ def check_keep_listening():
     results, took = asyncio.run(each())
     assert results == {"listenbrainz": "ok", "maloja": "error: TimeoutError"}, results
     assert took < 0.9, f"services ran one after another ({took:.2f}s)"
+
+
+def _music(seconds, seed=7):
+    """Seconds of changing tones, enough for shazamio-core to fingerprint."""
+    import random
+    rnd = random.Random(seed)
+    samples, phase = [], [0.0, 0.0, 0.0]
+    for note in range(seconds * 4):
+        freqs = [rnd.uniform(200, 3000) for _ in phase]
+        for _ in range(4000):
+            total = 0.0
+            for k, f in enumerate(freqs):
+                phase[k] += 2 * math.pi * f / 16000
+                total += math.sin(phase[k])
+            samples.append(6000 * total)
+    return _wav_of(samples)
+
+
+def check_shazamio():
+    """shazamio 0.9: the listener asks with its own client, a 12s window and
+    no warning, and the fingerprint is made locally. Shazam itself is faked."""
+    import asyncio
+    import warnings
+    import shazamio.api
+    from scrobster import listener
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        house = listener.Listener()
+    assert not [w for w in caught if "segment_duration_seconds" in str(w.message)], \
+        [str(w.message) for w in caught]
+    assert MAX_SEGMENT_SECONDS == shazamio.api.WINDOW_SECONDS
+    client = house._shazam.http_client
+    assert isinstance(client, listener.ShazamClient)
+
+    sent, asked = [], []
+    track = {"key": "42", "title": "Song", "subtitle": "Artist",
+             "images": {"coverart": "https://example.invalid/c.jpg"}, "isrc": "GBAAA0000001",
+             "sections": [{"metadata": [{"title": "Album", "text": "Record"}]}]}
+
+    async def fake_request(method, url, **kwargs):
+        sent.append((method, url, kwargs))
+        return {"matches": [{"offset": 31.5}], "track": track}
+    client.request = fake_request
+    real_recognize = house._shazam.recognize
+
+    async def spy(data, *args, **kwargs):
+        asked.append(data)
+        return await real_recognize(data, *args, **kwargs)
+    house._shazam.recognize = spy
+
+    for seconds in (12, 20, 8):
+        sent.clear()
+        asked.clear()
+        house._last_request = 0.0
+        wav = _music(seconds)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            result = asyncio.run(house.recognize(wav))
+        assert not [w for w in caught if "segment_duration_seconds" in str(w.message)]
+        assert asked == [wav], "recognize() gets the WAV as captured"
+        with wave.open(io.BytesIO(asked[0])) as w:
+            assert w.getnframes() == seconds * w.getframerate()
+        assert len(sent) == 1, "one request, through our client"
+        method, url, kwargs = sent[0]
+        assert method == "POST" and url.startswith("https://amp.shazam.com/"), url
+        signature = kwargs["json"]["signature"]
+        assert signature["uri"].startswith("data:audio/vnd.shazam.sig;base64,")
+        assert signature["samplems"] == min(seconds, 12) * 1000, \
+            (seconds, signature["samplems"], "the middle 12s, or a shorter clip whole")
+        assert parse_track(result) == {
+            "track_key": "42", "title": "Song", "artist": "Artist", "album": "Record",
+            "art_url": "https://example.invalid/c.jpg", "isrc": "GBAAA0000001", "offset": 31.5}
+
+    # shazamio passes our 429 through, so the shared backoff starts.
+    async def says_429(method, url, **kwargs):
+        raise listener.RateLimited("Shazam is limiting requests from this address")
+    client.request = says_429
+    house._last_request = 0.0
+    try:
+        asyncio.run(house.recognize(_music(12)))
+        raise AssertionError("a 429 must raise RateLimited")
+    except listener.RateLimited:
+        pass
+    assert house.rate_limited_for() > 0 and house.last_rate_limited
 
 
 def check_enrich():

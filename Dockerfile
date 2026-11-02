@@ -1,16 +1,38 @@
-# PyPI has no 32-bit ARM wheels for numpy or shazamio-core, so a linux/arm/v7
-# build compiles them here. shazamio-core is Rust, and its audio crate links
-# ALSA. Other platforms leave /wheels empty and install from PyPI as before.
+# PyPI has no 32-bit ARM wheel for shazamio-core, so a linux/arm/v7 build
+# compiles it here. shazamio-core is Rust, and it builds the libopus it bundles
+# with CMake and a C compiler. Other platforms leave /wheels empty and install
+# from PyPI as before.
+# shazamio-core 2 declares rust-version 1.87, newer than Debian's rustc, so
+# rustup installs it. rustup-init is a pinned release whose checksum is checked
+# before it runs, from
+# https://static.rust-lang.org/rustup/archive/<version>/armv7-unknown-linux-gnueabihf/rustup-init.sha256
+# The build backend, maturin, is pinned in build-constraints.txt.
+# libopus is built without SIMD intrinsics: its CMake compiles the NEON files
+# without -mfpu=neon on 32-bit ARM, so they fail against Rust's default
+# -mfpu=vfpv3-d16. Opus only decodes short browser clips, so speed is no matter,
+# and the result runs on ARMv7 CPUs without NEON too.
 FROM python:3.12-slim AS wheels
 ARG TARGETARCH
 ARG TARGETVARIANT
-COPY requirements.txt .
+ARG RUSTUP_VERSION=1.29.2
+ARG RUSTUP_SHA256=fb8cc6c0ff713fd405a6940c80138516da9b75e6649e280cb65342afa3dcf188
+ENV PATH="/root/.cargo/bin:${PATH}"
+COPY requirements.txt build-constraints.txt ./
 RUN mkdir /wheels \
     && if [ "${TARGETARCH}/${TARGETVARIANT}" = "arm/v7" ]; then \
         apt-get update \
         && apt-get install -y --no-install-recommends \
-            build-essential cargo pkg-config libasound2-dev \
-        && pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt; \
+            build-essential ca-certificates cmake curl \
+        && curl --proto '=https' --tlsv1.2 -sSfo /tmp/rustup-init \
+            "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/armv7-unknown-linux-gnueabihf/rustup-init" \
+        && echo "${RUSTUP_SHA256}  /tmp/rustup-init" | sha256sum -c - \
+        && chmod +x /tmp/rustup-init \
+        && /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain 1.87.0 \
+        && rm /tmp/rustup-init \
+        && echo 'set(OPUS_DISABLE_INTRINSICS ON CACHE BOOL "" FORCE)' > /tmp/opus.cmake \
+        && CMAKE_TOOLCHAIN_FILE_armv7_unknown_linux_gnueabihf=/tmp/opus.cmake \
+            PIP_CONSTRAINT=/build-constraints.txt \
+            pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt; \
     fi
 
 FROM python:3.12-slim

@@ -167,7 +167,7 @@ jobs:
             'ls /usr/lib/*/alsa-lib/libasound_module_pcm_pulse.so' >/dev/null
           docker rm -f smoke
 
-      # 32-bit ARM compiles numpy and shazamio-core from source, so a dependency
+      # 32-bit ARM compiles shazamio-core from source, so a dependency
       # bump can break only that platform. Build it here, where a pull request
       # sees the failure, rather than in the release after the merge. The cache
       # makes this quick unless requirements.txt changed. Its own scope stops it
@@ -186,7 +186,7 @@ jobs:
       - name: Check the 32-bit ARM image
         run: |
           docker run --rm --platform linux/arm/v7 scrobster:armv7 \
-            python -c "import numpy, shazamio_core, scrobster.app"
+            python -c "import shazamio_core, scrobster.app"
 
   # helm template only proves the chart renders. Installing it into a real
   # cluster proves the pod starts, the volume is writable as uid 1000, and

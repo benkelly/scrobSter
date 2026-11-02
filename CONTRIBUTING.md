@@ -12,9 +12,8 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
-The Dockerfile and CI use Python 3.12. Python 3.13 removed `audioop`, which
-pydub (under shazamio) imports, so `requirements.txt` installs `audioop-lts`
-there through a `python_version >= "3.13"` marker. Nothing extra is needed.
+The Dockerfile and CI use Python 3.12. shazamio-core fingerprints and decodes
+the audio itself, so nothing extra is needed on newer Pythons either.
 
 Run it as in the README's Quick start:
 

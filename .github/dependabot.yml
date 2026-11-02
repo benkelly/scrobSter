@@ -23,8 +23,7 @@ updates:
   # Python patch releases and Debian security fixes on every rebuild, so no
   # pull request is needed for those. A move to a new Python (3.12 to 3.13) is
   # ignored here on purpose: it must be done by hand, together with the
-  # python-version in ci.yml. requirements.txt already carries audioop-lts for
-  # 3.13, which pydub needs there.
+  # python-version in ci.yml.
   - package-ecosystem: docker
     directory: "/"
     schedule:
