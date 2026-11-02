@@ -20,7 +20,7 @@ body:
         The `version` field of `GET /api/status`. Signed in, open
         `http://your-host:8000/api/status` in the browser. The image tag or the
         add-on page also shows it.
-      placeholder: "0.7.2"
+      placeholder: "0.8.0"
     validations:
       required: true
 
